@@ -2,8 +2,8 @@
  * QuizZy - Manifest V3 Background Service Worker
  * 
  * Handles:
- * 1. Side panel open behavior
- * 2. On-demand script injection (extractor.js, executor.js) in ISOLATED world
+ * 1. Side panel open behavior & floating HUD injection
+ * 2. On-demand script injection (extractor.js, executor.js, floating_hud.js) in ISOLATED world
  * 3. Proxying solve and health requests to local FastAPI backend (http://127.0.0.1:8000)
  * 4. Multi-trigger emergency kill switch (tab change, navigation away from quiz page)
  */
@@ -11,6 +11,42 @@
 "use strict";
 
 const BACKEND_BASE_URL = "http://127.0.0.1:8000";
+
+// Helper to resolve target tab: sender tab -> message.tabId -> active tab query
+async function resolveTargetTab(message, sender) {
+  if (message && message.tabId) {
+    try {
+      const tab = await chrome.tabs.get(message.tabId);
+      if (tab) return tab;
+    } catch (_) {}
+  }
+  if (sender && sender.tab && sender.tab.id) {
+    return sender.tab;
+  }
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return (tabs && tabs[0]) ? tabs[0] : null;
+}
+
+// Injects extractor, executor, and floating HUD into target tab
+async function injectAndToggleFloatingHud(tabId) {
+  if (!tabId) throw new Error("No valid tabId for HUD injection.");
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    files: ["extractor.js"]
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    files: ["executor.js"]
+  });
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    files: ["floating_hud.js"]
+  });
+  return results && results[0] ? results[0].result : { success: true };
+}
 
 // Configure side panel behavior on installation / startup
 if (typeof chrome !== "undefined" && chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
@@ -28,6 +64,12 @@ if (typeof chrome !== "undefined" && chrome.action && chrome.action.onClicked) {
       } catch (err) {
         console.warn("[QuizZy Service Worker] chrome.sidePanel.open fallback warning:", err);
       }
+    }
+    // Also toggle floating HUD on active tab!
+    if (tab && tab.id) {
+      try {
+        await injectAndToggleFloatingHud(tab.id);
+      } catch (_) {}
     }
   });
 }
@@ -114,13 +156,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // 3. Extract quiz from active tab DOM
   if (action === "EXTRACT_QUIZ") {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs || tabs.length === 0 || !tabs[0].id) {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
         sendResponse({ success: false, error: "No active tab found in current window." });
         return;
       }
-      const tabId = tabs[0].id;
-      const url = tabs[0].url || "";
+      const tabId = targetTab.id;
+      const url = targetTab.url || "";
 
       // Check for restricted URLs (chrome://, edge://, etc.)
       if (url.startsWith("chrome://") || url.startsWith("edge://") || url.startsWith("chrome-extension://")) {
@@ -173,18 +215,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (err) {
         sendResponse({ success: false, error: `Script execution error: ${err.message}` });
       }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
     });
     return true; // asynchronous response
   }
 
   // 4. Opt-in DOM highlight on active tab
   if (action === "APPLY_HIGHLIGHT") {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs || tabs.length === 0 || !tabs[0].id) {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
         sendResponse({ success: false, error: "No active tab found." });
         return;
       }
-      const tabId = tabs[0].id;
+      const tabId = targetTab.id;
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
@@ -208,33 +252,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (err) {
         sendResponse({ success: false, error: err.message });
       }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
     });
     return true;
   }
 
   // 5. Query active tab information (for per-hostname settings & allowlist)
   if (action === "GET_ACTIVE_TAB") {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs && tabs[0]) {
+    resolveTargetTab(message, sender).then((targetTab) => {
+      if (targetTab) {
         sendResponse({
           success: true,
-          tab: { id: tabs[0].id, url: tabs[0].url || "", title: tabs[0].title || "" }
+          tab: { id: targetTab.id, url: targetTab.url || "", title: targetTab.title || "" }
         });
       } else {
         sendResponse({ success: false, error: "No active tab found." });
       }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
     });
     return true;
   }
 
   // 6. Execute Quiz Action (Auto Mode or Single-Step Apply)
   if (action === "EXECUTE_QUIZ_ACTION") {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs || tabs.length === 0 || !tabs[0].id) {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
         sendResponse({ success: false, error: "No active tab found for action execution." });
         return;
       }
-      const tabId = tabs[0].id;
+      const tabId = targetTab.id;
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
@@ -259,18 +307,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (err) {
         sendResponse({ success: false, error: `Action execution error: ${err.message}` });
       }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
     });
     return true;
   }
 
   // 7. Click Next / Advance Button
   if (action === "CLICK_NEXT_BUTTON") {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs || tabs.length === 0 || !tabs[0].id) {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
         sendResponse({ success: false, error: "No active tab found for Next button click." });
         return;
       }
-      const tabId = tabs[0].id;
+      const tabId = targetTab.id;
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
@@ -295,6 +345,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (err) {
         sendResponse({ success: false, error: `Next button click error: ${err.message}` });
       }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
     });
     return true;
   }
@@ -325,6 +377,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 9. Toggle / Launch Floating HUD on Active Quiz Tab
+  if (action === "TOGGLE_FLOATING_HUD") {
+    resolveTargetTab(message, sender).then(async (targetTab) => {
+      if (!targetTab || !targetTab.id) {
+        sendResponse({ success: false, error: "No active tab found." });
+        return;
+      }
+      const url = targetTab.url || "";
+      if (url.startsWith("chrome://") || url.startsWith("edge://") || url.startsWith("chrome-extension://")) {
+        sendResponse({
+          success: false,
+          error: "Cannot inject Floating HUD on browser internal pages (" + url + ")."
+        });
+        return;
+      }
+
+      try {
+        const hudRes = await injectAndToggleFloatingHud(targetTab.id);
+        sendResponse({ success: true, result: hudRes });
+      } catch (err) {
+        sendResponse({ success: false, error: `HUD injection error: ${err.message}` });
+      }
+    }).catch((err) => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true; // asynchronous response
+  }
+
   return false;
 });
-

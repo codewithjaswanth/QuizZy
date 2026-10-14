@@ -75,6 +75,22 @@
   }
 
   /**
+   * Helper to identify QuizZy internal elements (such as the Floating HUD)
+   * so they are 100% shielded from quiz detection and DOM traversal.
+   */
+  function isQuizZyInternalElement(el) {
+    if (!el) return false;
+    if (el.id === "__quizzy_hud_host__") return true;
+    if (typeof el.getAttribute === "function" && el.getAttribute("data-quizzy-ignore") === "true") return true;
+    if (typeof el.closest === "function") {
+      try {
+        if (el.closest("#__quizzy_hud_host__, [data-quizzy-ignore='true']")) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  /**
    * Extracts clean visible text from elements while preserving KaTeX math formulas.
    * Mirrors 1:1 implementation in extractor.js.
    */
@@ -89,6 +105,7 @@
         return;
       }
       if (node.nodeType !== 1) return;
+      if (isQuizZyInternalElement(node)) return;
 
       const tag = node.tagName.toLowerCase();
       if (tag === "script" || tag === "style" || tag === "noscript") return;
@@ -306,6 +323,7 @@
    */
   function findQuizCard(doc) {
     if (!doc) return null;
+    if (isQuizZyInternalElement(doc)) return null;
 
     // 1. Semantic card classes
     const semanticSelectors = [
@@ -319,6 +337,7 @@
     for (const sel of semanticSelectors) {
       const found = Array.from(doc.querySelectorAll(sel)).filter(isVisible);
       for (const el of found) {
+        if (isQuizZyInternalElement(el)) continue;
         if (!isExplanationOrFeedback(el)) return el;
       }
     }
@@ -327,6 +346,7 @@
     const buttons = Array.from(doc.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")).filter(isVisible);
     let actionBtn = null;
     for (const btn of buttons) {
+      if (isQuizZyInternalElement(btn)) continue;
       const txt = cleanText(btn.textContent || btn.value || "");
       if (/^(?:submit|show\s*answer|next\s*question|next|check|skip)$/i.test(txt)) {
         actionBtn = btn;
@@ -339,6 +359,7 @@
       let bestCard = null;
 
       while (curr && curr !== doc.body && curr !== doc.documentElement) {
+        if (isQuizZyInternalElement(curr)) break;
         const currText = curr.textContent || "";
         const hasTopNavMarkers = /mcq\s*practice|end\s*practice|questions?\s*attempted|practice\s*instructions/i.test(currText);
         if (hasTopNavMarkers) {
@@ -366,6 +387,7 @@
     // 3. Fallbacks
     const generic = Array.from(doc.querySelectorAll("main, [role='main'], form, .card")).filter(isVisible);
     for (const el of generic) {
+      if (isQuizZyInternalElement(el)) continue;
       if (!isExplanationOrFeedback(el)) return el;
     }
 
@@ -379,6 +401,7 @@
   function findClasslessOptionElements(scopeRoot, docRef) {
     const scope = scopeRoot || docRef || (typeof document !== "undefined" ? document : null);
     if (!scope) return [];
+    if (isQuizZyInternalElement(scope)) return [];
 
     const candidateContainers = Array.from(scope.querySelectorAll("div, ul, ol, section, form")).filter(isVisible);
     const allDescendants = Array.from(scope.querySelectorAll("*"));
@@ -387,8 +410,9 @@
     for (let i = candidateContainers.length - 1; i >= 0; i--) {
       const container = candidateContainers[i];
       if (container === scope) continue;
+      if (isQuizZyInternalElement(container)) continue;
 
-      const rawChildren = Array.from(container.children || []).filter(isVisible);
+      const rawChildren = Array.from(container.children || []).filter(c => isVisible(c) && !isQuizZyInternalElement(c));
       const validChildren = rawChildren.filter(c => {
         const tag = (c.tagName || "").toLowerCase();
         return ["div", "li", "button", "label", "a", "span"].includes(tag) && !["hr", "br", "script", "style"].includes(tag);
@@ -444,6 +468,7 @@
    */
   function isVisible(el) {
     if (!el) return false;
+    if (isQuizZyInternalElement(el)) return false;
     if (el.hidden) return false;
     if (typeof window !== "undefined" && window.getComputedStyle) {
       try {
@@ -542,8 +567,10 @@
     const allRadios = Array.from(doc.querySelectorAll("input[type='radio']"));
     const radioRows = [];
     for (const r of allRadios) {
+      if (isQuizZyInternalElement(r)) continue;
       const lbl = r.closest("label") || (r.id ? doc.querySelector(`label[for="${r.id}"]`) : null);
       const row = lbl || r.closest("[class*='option'], [class*='choice'], [class*='radio'], li, tr") || r.parentElement;
+      if (isQuizZyInternalElement(row)) continue;
       if (isRadioOrOptionVisible(r, row)) {
         if (!isExplanationOrFeedback(row) && !isHeaderOrNavText(cleanText(row.innerText || row.textContent || ""))) {
           radioRows.push(row || r);
@@ -1187,7 +1214,8 @@
     simulateDragDrop,
     executeOrderAction,
     clickNextButton,
-    executeAction
+    executeAction,
+    isQuizZyInternalElement
   };
 
   if (typeof window !== "undefined") {

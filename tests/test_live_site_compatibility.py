@@ -215,6 +215,74 @@ class MockNode {
       this.value = "";
       this._text = "";
       this.listeners = {};
+      this._styleObj = null;
+    }
+  }
+
+  get id() {
+    return this.getAttribute("id") || "";
+  }
+
+  set id(v) {
+    this.setAttribute("id", v);
+  }
+
+  get style() {
+    if (!this._styleObj) {
+      const self = this;
+      this._styleObj = {
+        _css: "",
+        get cssText() { return self._css || ""; },
+        set cssText(val) { self._css = String(val); self.setAttribute("style", val); }
+      };
+    }
+    return this._styleObj;
+  }
+
+  attachShadow(opts) {
+    const s = new MockNode("shadow-root");
+    s.mode = opts && opts.mode ? opts.mode : "open";
+    s.host = this;
+    this.shadowRoot = s;
+    return s;
+  }
+
+  removeChild(child) {
+    const idx = this.childNodes.indexOf(child);
+    if (idx !== -1) {
+      this.childNodes.splice(idx, 1);
+      child.parentElement = null;
+      child.parentNode = null;
+    }
+    return child;
+  }
+
+  set innerHTML(html) {
+    this.childNodes = [];
+    const tagRegex = /<!--[\s\S]*?-->|<(\/)?([a-zA-Z0-9-]+)([^>]*)>|([^<]+)/g;
+    const stack = [this];
+    let match;
+    while ((match = tagRegex.exec(html)) !== null) {
+      if (match[0].startsWith("<!--")) continue;
+      if (match[4]) {
+        const txt = match[4].trim();
+        if (txt) stack[stack.length - 1].appendChild(new MockNode(txt, true));
+      } else if (match[1]) {
+        const closeTag = match[2].toUpperCase();
+        if (stack.length > 1 && stack[stack.length - 1].tagName === closeTag) stack.pop();
+      } else if (match[2]) {
+        const tag = match[2];
+        const rawAttrs = match[3] || "";
+        const node = new MockNode(tag);
+        const attrRegex = /([a-zA-Z0-9_-]+)(?:=["']([^"']*)["'])?/g;
+        let aMatch;
+        while ((aMatch = attrRegex.exec(rawAttrs)) !== null) {
+          node.setAttribute(aMatch[1], aMatch[2] !== undefined ? aMatch[2] : "");
+        }
+        stack[stack.length - 1].appendChild(node);
+        const isSelfClosing = ["br", "hr", "img", "input", "circle", "line", "polyline", "polygon", "rect", "path"].includes(tag.toLowerCase()) || rawAttrs.trim().endsWith("/");
+        if (!isSelfClosing) stack.push(node);
+      }
     }
   }
 
@@ -487,6 +555,9 @@ function el(tag, className = "", attrs = {}, children = []) {
 
 const doc = el("html", "", {}, [el("head"), el("body")]);
 doc.body = doc.childNodes[1];
+doc.documentElement = doc;
+doc.getElementById = (id) => doc.querySelector('#' + id);
+doc.createElement = (tag) => new MockNode(tag);
 global.document = doc;
 
 const extractor = require(path.resolve(process.cwd(), "extension/extractor.js"));
@@ -798,6 +869,9 @@ async function main() {
     ])
   ]);
   browserDoc.body = browserDoc.childNodes[1];
+  browserDoc.documentElement = browserDoc;
+  browserDoc.getElementById = (id) => browserDoc.querySelector('#' + id);
+  browserDoc.createElement = (tag) => new MockNode(tag);
 
   const browserSandbox = {
     window: null,
@@ -900,6 +974,9 @@ async function main() {
     ])
   ]);
   ccbpDoc.body = ccbpDoc.childNodes[1];
+  ccbpDoc.documentElement = ccbpDoc;
+  ccbpDoc.getElementById = (id) => ccbpDoc.querySelector('#' + id);
+  ccbpDoc.createElement = (tag) => new MockNode(tag);
 
   const ccbpSandbox = {
     window: null,
@@ -918,7 +995,27 @@ async function main() {
     Object,
     Set,
     RegExp,
-    console
+    console,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id),
+    chrome: {
+      storage: {
+        local: {
+          get: (keys, cb) => { if (cb) cb({}); },
+          set: (obj, cb) => { if (cb) cb(); }
+        }
+      },
+      runtime: {
+        sendMessage: (msg, cb) => {
+          if (cb) cb({ success: true, result: { success: true } });
+        },
+        onMessage: {
+          addListener: () => {}
+        }
+      }
+    }
   };
   ccbpSandbox.window = ccbpSandbox;
 
@@ -950,7 +1047,55 @@ async function main() {
     throw new Error(`Expected first option to be clicked exactly once, but was clicked ${opt0ClickCount} times!`);
   }
 
+  // Test 12: Floating HUD Shadow-DOM Mount & Zero Leakage Immunity on CCBP DOM
+  const hudCode = fs.readFileSync(path.resolve(process.cwd(), "extension/floating_hud.js"), "utf8");
+  const hudInstance = vm.runInNewContext(hudCode, ccbpSandbox);
+
+  const hudHost = ccbpDoc.querySelector("#__quizzy_hud_host__");
+  if (!hudHost) {
+    throw new Error("Expected #__quizzy_hud_host__ to be mounted in ccbpDoc!");
+  }
+  if (!hudHost.shadowRoot) {
+    throw new Error("Expected #__quizzy_hud_host__ to have an attached shadowRoot!");
+  }
+  if (hudHost.getAttribute("data-quizzy-ignore") !== "true") {
+    throw new Error("Expected #__quizzy_hud_host__ to have data-quizzy-ignore='true'!");
+  }
+
+  // Idempotency: Re-running hudCode does not duplicate host
+  vm.runInNewContext(hudCode, ccbpSandbox);
+  const allHosts = ccbpDoc.querySelectorAll("#__quizzy_hud_host__");
+  if (allHosts.length !== 1) {
+    throw new Error(`Expected exactly 1 HUD host after re-injection, got ${allHosts.length}`);
+  }
+
+  // Verify extractor on CCBP DOM while HUD is active ignores HUD completely
+  const ccbpExtractionWithHud = vm.runInNewContext(extractorCode, ccbpSandbox);
+  if (!ccbpExtractionWithHud || !ccbpExtractionWithHud.success) {
+    throw new Error(`Extraction with HUD mounted failed: ${JSON.stringify(ccbpExtractionWithHud)}`);
+  }
+  if (ccbpExtractionWithHud.question !== "A rare event A has P(A) = 0.01. Event B is common, P(B) = 0.9. If P(A | B) = 0.015, which statement is likely true?") {
+    throw new Error(`HUD contaminated question text! Got: ${ccbpExtractionWithHud.question}`);
+  }
+  if (JSON.stringify(ccbpExtractionWithHud.options) !== JSON.stringify(expectedOptions)) {
+    throw new Error(`HUD contaminated options! Expected ${JSON.stringify(expectedOptions)}, got ${JSON.stringify(ccbpExtractionWithHud.options)}`);
+  }
+
+  // Verify executor on CCBP DOM while HUD is active works without interference
+  opt0ClickCount = 0;
+  const clickResultWithHud = ccbpExecutor.executeMcqAction({
+    targetText: "B increases chance of A",
+    selected_index: 0
+  });
+  if (!clickResultWithHud || !clickResultWithHud.success) {
+    throw new Error(`executeMcqAction with HUD mounted failed: ${JSON.stringify(clickResultWithHud)}`);
+  }
+  if (opt0ClickCount !== 1) {
+    throw new Error(`Expected option to be clicked with HUD mounted, got count ${opt0ClickCount}`);
+  }
+
   console.log("NODE_RUNTIME_TESTS_OK");
+  process.exit(0);
 }
 
 main().catch(err => {
@@ -960,10 +1105,12 @@ main().catch(err => {
 """
 
     res = subprocess.run(
-        ["node", "-e", js_script],
+        ["node", "-"],
+        input=js_script,
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False
     )
 

@@ -1216,3 +1216,53 @@ body {
   border-color: rgba(239, 68, 68, 0.3);
 }
 
+/* Floating HUD Quick Launcher Banner */
+.hud-launch-banner {
+  padding: 8px 12px;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.08) 0%, rgba(99, 102, 241, 0.12) 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.btn-hud-launch {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #0284C7 0%, #4F46E5 100%);
+  color: #FFFFFF;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-md, 8px);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35);
+  transition: all 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-hud-launch:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.45);
+  filter: brightness(1.08);
+}
+
+.btn-hud-launch:active {
+  transform: translateY(0);
+}
+
+.hud-launch-icon {
+  font-size: 14px;
+}
+
+.hud-launch-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+  color: #FFFFFF;
+  letter-spacing: 0.5px;
+}
+
+

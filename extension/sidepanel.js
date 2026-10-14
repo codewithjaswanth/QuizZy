@@ -375,6 +375,29 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       updateAllowlistUI();
+
+      // Auto-inject Floating HUD if connected on an allowed quiz tab
+      if (isCurrentHostAllowed()) {
+        chrome.runtime.sendMessage({ action: "TOGGLE_FLOATING_HUD" }, () => {
+          if (chrome.runtime.lastError) {}
+        });
+      }
+    });
+  }
+
+  // Floating HUD Quick Launcher
+  const btnLaunchHud = document.getElementById("btn-launch-hud");
+  if (btnLaunchHud) {
+    btnLaunchHud.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ action: "TOGGLE_FLOATING_HUD" }, (res) => {
+        if (chrome.runtime.lastError || (res && !res.success)) {
+          const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : (res ? res.error : "Failed to launch HUD");
+          showAlert(`Floating HUD: ${err}`, true);
+        } else {
+          showAlert("Floating HUD launched on active page!", false);
+          setTimeout(hideAlert, 2000);
+        }
+      });
     });
   }
 
