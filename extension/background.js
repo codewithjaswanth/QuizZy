@@ -132,25 +132,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       try {
-        await chrome.scripting.executeScript({
+        const injectionResults = await chrome.scripting.executeScript({
           target: { tabId },
           world: "ISOLATED",
           files: ["extractor.js"]
         });
 
-        const executionResults = await chrome.scripting.executeScript({
-          target: { tabId },
-          world: "ISOLATED",
-          func: (customSelectors, forcedQType) => {
-            if (window.QuizZyExtractor && typeof window.QuizZyExtractor.extractQuizFromDom === "function") {
-              return window.QuizZyExtractor.extractQuizFromDom(customSelectors, forcedQType);
-            }
-            return { success: false, error: "QuizZyExtractor was not found in the active tab context." };
-          },
-          args: [message.customSelectors || {}, message.forcedQType || "auto"]
-        });
+        let extractionResult = (injectionResults && injectionResults[0]) ? injectionResults[0].result : null;
 
-        const extractionResult = executionResults && executionResults[0] ? executionResults[0].result : null;
+        const hasCustomParams = (message.customSelectors && Object.keys(message.customSelectors).length > 0) ||
+                                (message.forcedQType && message.forcedQType !== "auto");
+
+        if (!extractionResult || hasCustomParams) {
+          const executionResults = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: "ISOLATED",
+            func: (customSelectors, forcedQType) => {
+              const ext = window.QuizZyExtractor || window.__QuizZyExtractor;
+              if (ext && typeof ext.extractQuizFromDom === "function") {
+                return ext.extractQuizFromDom(customSelectors, forcedQType);
+              }
+              if (window.__QUIZZY_LAST_EXTRACTION__) {
+                return window.__QUIZZY_LAST_EXTRACTION__;
+              }
+              return { success: false, error: "QuizZyExtractor was not found in the active tab context." };
+            },
+            args: [message.customSelectors || {}, message.forcedQType || "auto"]
+          });
+
+          if (executionResults && executionResults[0] && executionResults[0].result) {
+            extractionResult = executionResults[0].result;
+          }
+        }
+
         if (extractionResult) {
           sendResponse(extractionResult);
         } else {
@@ -232,8 +246,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           target: { tabId },
           world: "ISOLATED",
           func: (payload) => {
-            if (window.QuizZyExecutor && typeof window.QuizZyExecutor.executeAction === "function") {
-              return window.QuizZyExecutor.executeAction(payload);
+            const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
+            if (exec && typeof exec.executeAction === "function") {
+              return exec.executeAction(payload);
             }
             return { success: false, error: "QuizZyExecutor not loaded in tab." };
           },
@@ -267,7 +282,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           target: { tabId },
           world: "ISOLATED",
           func: async (customNextSelector) => {
-            if (window.QuizZyExecutor && typeof window.QuizZyExecutor.clickNextButton === "function") {
+            const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
+            if (exec && typeof exec.clickNextButton === "function") {
               return await window.QuizZyExecutor.clickNextButton(customNextSelector);
             }
             return { success: false, error: "QuizZyExecutor not loaded in tab." };

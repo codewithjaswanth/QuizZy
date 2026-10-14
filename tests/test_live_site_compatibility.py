@@ -350,10 +350,22 @@ class MockNode {
 
   focus() {}
 
+  scrollIntoView() {}
+
+  contains(other) {
+    let cur = other;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
   matches(sel) {
     if (!sel) return false;
     sel = sel.trim();
     if (this.nodeType !== 1) return false;
+    if (sel === "*") return true;
 
     const attrMatch = sel.match(/^([a-zA-Z0-9_-]+|\.[a-zA-Z0-9_-]+)?\[([^\]]+)\]$/);
     if (attrMatch) {
@@ -764,6 +776,174 @@ async function main() {
   // Test 9: Idempotent Re-Injection Guard Check
   if (!global.window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__) {
     throw new Error("window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__ was not set!");
+  }
+
+  // Test 10: Browser-Exact vm.runInNewContext Script Completion Value Test (With module === undefined)
+  const vm = require("vm");
+  const fs = require("fs");
+  const extractorCode = fs.readFileSync(path.resolve(process.cwd(), "extension/extractor.js"), "utf8");
+  const executorCode = fs.readFileSync(path.resolve(process.cwd(), "extension/executor.js"), "utf8");
+
+  // Build a clean browser sandbox without module or exports
+  const browserDoc = el("html", "", {}, [
+    el("head"),
+    el("body", "", {}, [
+      el("div", "quiz-card", {}, [
+        el("p", "question-text", {}, ["What is the capital of France?"]),
+        el("div", "options", {}, [
+          el("label", "option", {}, [el("input", "", { type: "radio", name: "q" }), "Paris"]),
+          el("label", "option", {}, [el("input", "", { type: "radio", name: "q" }), "London"])
+        ])
+      ])
+    ])
+  ]);
+  browserDoc.body = browserDoc.childNodes[1];
+
+  const browserSandbox = {
+    window: null,
+    document: browserDoc,
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    Event: global.Event,
+    MouseEvent: global.MouseEvent,
+    PointerEvent: global.PointerEvent,
+    HTMLInputElement: global.HTMLInputElement,
+    HTMLTextAreaElement: global.HTMLTextAreaElement,
+    Date,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Set,
+    RegExp,
+    console
+  };
+  browserSandbox.window = browserSandbox;
+
+  const completionValue = vm.runInNewContext(extractorCode, browserSandbox);
+  if (completionValue === undefined || completionValue === null) {
+    throw new Error("vm.runInNewContext(extractorCode) returned undefined/null! Must return the extraction result!");
+  }
+  if (!completionValue.success || completionValue.question !== "What is the capital of France?") {
+    throw new Error(`vm.runInNewContext returned invalid result: ${JSON.stringify(completionValue)}`);
+  }
+  if (!browserSandbox.__QUIZZY_LAST_EXTRACTION__ || !browserSandbox.window.__QuizZyExtractor) {
+    throw new Error("window.__QUIZZY_LAST_EXTRACTION__ or window.__QuizZyExtractor not set in browserSandbox!");
+  }
+
+  const executorCompletion = vm.runInNewContext(executorCode, browserSandbox);
+  if (executorCompletion === undefined || executorCompletion === null) {
+    throw new Error("vm.runInNewContext(executorCode) returned undefined/null!");
+  }
+  if (typeof executorCompletion.executeMcqAction !== "function") {
+    throw new Error("executorCompletion does not have executeMcqAction function!");
+  }
+
+  // Test 11: Exact learning.ccbp.in Classless styled-components DOM Reproduction Test
+  // Zero semantic classes, zero <input type="radio">, only sc-... hashed classes!
+  let opt0Clicked = false;
+  const opt0Row = el("div", "sc-opt-row sc-bczRLJ", {}, [
+    el("div", "sc-circle sc-kLLOBW", {}),
+    el("div", "sc-opt-text sc-iBPRYJ", {}, ["B increases chance of A"])
+  ]);
+  opt0Row.addEventListener("click", () => { opt0Clicked = true; });
+
+  const ccbpDoc = el("html", "", {}, [
+    el("head"),
+    el("body", "sc-body-app", {}, [
+      // Top bar
+      el("div", "sc-topbar sc-jTzLTM", {}, [
+        el("span", "sc-title", {}, ["← MCQ PRACTICE |PROBABILITY RULES AND THEOREM"]),
+        el("span", "sc-score", {}, ["SCORE: 0"]),
+        el("span", "sc-attempted", {}, ["QUESTIONS ATTEMPTED: 0/15"]),
+        el("span", "sc-instructions", {}, ["PRACTICE INSTRUCTIONS"]),
+        el("span", "sc-end", {}, ["END PRACTICE"]),
+        el("span", "sc-id", {}, ["ID: N25G01A0095"])
+      ]),
+      // White Question Card
+      el("div", "sc-card-hash sc-fjdhpX", {}, [
+        el("div", "sc-q-hash sc-gKclnd", {}, [
+          "A rare event A has P(A) = 0.01. Event B is common, P(B) = 0.9. If P(A | B) = 0.015, which statement is likely true?"
+        ]),
+        el("hr", "sc-hr-hash sc-crXryy"),
+        // 4 classless option rows without radio inputs
+        el("div", "sc-opts-hash sc-dIouRR", {}, [
+          opt0Row,
+          el("div", "sc-opt-row sc-bczRLJ", {}, [
+            el("div", "sc-circle sc-kLLOBW", {}),
+            el("div", "sc-opt-text sc-iBPRYJ", {}, ["Independent"])
+          ]),
+          el("div", "sc-opt-row sc-bczRLJ", {}, [
+            el("div", "sc-circle sc-kLLOBW", {}),
+            el("div", "sc-opt-text sc-iBPRYJ", {}, ["Mutually exclusive"])
+          ]),
+          el("div", "sc-opt-row sc-bczRLJ", {}, [
+            el("div", "sc-circle sc-kLLOBW", {}),
+            el("div", "sc-opt-text sc-iBPRYJ", {}, ["B decreases chance"])
+          ])
+        ]),
+        // Action buttons inside card
+        el("div", "sc-btns sc-hKMtqu", {}, [
+          el("button", "sc-btn1 sc-eCYdqJ", { type: "button" }, ["SHOW ANSWER"]),
+          el("button", "sc-btn2 sc-jSMfEi", { type: "button" }, ["SUBMIT"])
+        ]),
+        // Skip section
+        el("div", "sc-skip sc-gKXOVf", {}, [
+          el("button", "sc-btn3 sc-iwsKbI", { type: "button" }, ["SKIP"]),
+          el("p", "sc-note sc-ftv Sup", {}, ["If you skip, you can attempt this question again after finishing all questions"])
+        ])
+      ])
+    ])
+  ]);
+  ccbpDoc.body = ccbpDoc.childNodes[1];
+
+  const ccbpSandbox = {
+    window: null,
+    document: ccbpDoc,
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    Event: global.Event,
+    MouseEvent: global.MouseEvent,
+    PointerEvent: global.PointerEvent,
+    HTMLInputElement: global.HTMLInputElement,
+    HTMLTextAreaElement: global.HTMLTextAreaElement,
+    Date,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Set,
+    RegExp,
+    console
+  };
+  ccbpSandbox.window = ccbpSandbox;
+
+  const ccbpExtraction = vm.runInNewContext(extractorCode, ccbpSandbox);
+  if (!ccbpExtraction || !ccbpExtraction.success) {
+    throw new Error(`learning.ccbp.in classless extraction failed: ${JSON.stringify(ccbpExtraction)}`);
+  }
+  if (ccbpExtraction.subject !== "PROBABILITY RULES AND THEOREM") {
+    throw new Error(`Expected subject 'PROBABILITY RULES AND THEOREM', got '${ccbpExtraction.subject}'`);
+  }
+  if (ccbpExtraction.question !== "A rare event A has P(A) = 0.01. Event B is common, P(B) = 0.9. If P(A | B) = 0.015, which statement is likely true?") {
+    throw new Error(`Expected exact CCBP question, got '${ccbpExtraction.question}'`);
+  }
+  const expectedOptions = ["B increases chance of A", "Independent", "Mutually exclusive", "B decreases chance"];
+  if (JSON.stringify(ccbpExtraction.options) !== JSON.stringify(expectedOptions)) {
+    throw new Error(`Expected options ${JSON.stringify(expectedOptions)}, got ${JSON.stringify(ccbpExtraction.options)}`);
+  }
+
+  // Test Executor clicking option 0 on learning.ccbp.in classless DOM
+  const ccbpExecutor = vm.runInNewContext(executorCode, ccbpSandbox);
+  const clickResult = ccbpExecutor.executeMcqAction({
+    targetText: "B increases chance of A",
+    selected_index: 0
+  });
+  if (!clickResult || !clickResult.success) {
+    throw new Error(`executeMcqAction on classless options failed: ${JSON.stringify(clickResult)}`);
+  }
+  if (!opt0Clicked) {
+    throw new Error("First option <div class='sc-opt-row'> did not receive click event!");
   }
 
   console.log("NODE_RUNTIME_TESTS_OK");

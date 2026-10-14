@@ -307,8 +307,12 @@
     if (!text) return true;
     const t = text.trim();
 
-    // Top-bar navigation, controls, scores, instructions
-    if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|show\s*answer|skip|submit|next|previous|back|continue|report(?:\s*an)?\s*issue)/i.test(t)) {
+    // Top-bar navigation, controls, scores, instructions, CCBP student ID & disclaimers
+    if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|show\s*answer|skip|submit|next|next\s*question|previous|back|continue|report(?:\s*an)?\s*issue|id\s*:\s*|if\s*you\s*skip)/i.test(t)) {
+      return true;
+    }
+
+    if (/if\s+you\s+skip,\s+you\s+can\s+attempt\s+this\s+question\s+again/i.test(t)) {
       return true;
     }
 
@@ -331,6 +335,12 @@
    */
   function isExplanationOrFeedback(el) {
     if (!el) return false;
+    // Interactive action buttons (SHOW ANSWER, SUBMIT, SKIP, etc.) are NOT explanation boxes
+    const tag = (el.tagName || "").toLowerCase();
+    if (tag === "button" || tag === "input") {
+      return false;
+    }
+
     const doc = (typeof document !== "undefined") ? document : null;
     const stopNode = doc ? doc.body : null;
 
@@ -339,6 +349,12 @@
 
     let curr = el;
     while (curr && curr !== stopNode && curr.nodeType === 1) {
+      const currTag = (curr.tagName || "").toLowerCase();
+      if (currTag === "button") {
+        curr = curr.parentElement;
+        continue;
+      }
+
       // 1. Check id and className on curr
       const cls = typeof curr.className === "string" ? curr.className : ((curr.getAttribute && curr.getAttribute("class")) || "");
       const id = typeof curr.id === "string" ? curr.id : ((curr.getAttribute && curr.getAttribute("id")) || "");
@@ -347,12 +363,12 @@
       }
 
       // 2. Check if curr's first element child is a heading that identifies an explanation section
-      const firstChild = curr.firstElementChild || (curr.children && curr.children[0]) || (curr.childNodes && curr.childNodes.find && curr.childNodes.find(c => c.nodeType === 1));
+      const firstChild = curr.firstElementChild || (curr.children && curr.children[0]);
       if (firstChild) {
-        const tag = (firstChild.tagName || "").toLowerCase();
-        if (/^h[1-6]$|strong|b|span|div/.test(tag)) {
+        const fcTag = (firstChild.tagName || "").toLowerCase();
+        if (fcTag !== "button" && /^h[1-6]$|strong|b|span|div/.test(fcTag)) {
           const fcText = cleanText(firstChild.textContent || firstChild.innerText || "");
-          if (headingPattern.test(fcText)) {
+          if (headingPattern.test(fcText) && !/show\s*answer/i.test(fcText)) {
             return true;
           }
         }
@@ -361,9 +377,9 @@
       // 3. Check curr's previous element sibling if it was a heading for an explanation section
       if (curr.previousElementSibling) {
         const prevTag = (curr.previousElementSibling.tagName || "").toLowerCase();
-        if (/^h[1-6]$|strong|b/.test(prevTag)) {
+        if (prevTag !== "button" && /^h[1-6]$|strong|b/.test(prevTag)) {
           const prevText = cleanText(curr.previousElementSibling.textContent || curr.previousElementSibling.innerText || "");
-          if (headingPattern.test(prevText)) {
+          if (headingPattern.test(prevText) && !/show\s*answer/i.test(prevText)) {
             return true;
           }
         }
@@ -373,6 +389,122 @@
     }
 
     return false;
+  }
+
+  /**
+   * Finds the Quiz Card container.
+   * Supports semantic card classes, button-anchored cards (for classless styled-components), and generic main/form/card elements.
+   */
+  function findQuizCard(doc) {
+    if (!doc) return null;
+
+    // 1. Semantic card classes
+    const semanticSelectors = [
+      "[class*='question-card']", "[class*='questionCard']",
+      "[class*='questionContainer']", "[class*='question-container']",
+      "[class*='quiz-card']", "[class*='quizCard']",
+      "[class*='quiz-container']", "[class*='quizContainer']",
+      "[class*='practice-card']", "[class*='problem-card']",
+      "[class*='mcq-card']"
+    ];
+    for (const sel of semanticSelectors) {
+      const found = Array.from(doc.querySelectorAll(sel)).filter(isVisible);
+      for (const el of found) {
+        if (!isExplanationOrFeedback(el)) return el;
+      }
+    }
+
+    // 2. Button-anchored discovery (for styled-components / sc-...)
+    const buttons = Array.from(doc.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")).filter(isVisible);
+    let actionBtn = null;
+    for (const btn of buttons) {
+      const txt = cleanText(btn.textContent || btn.value || "");
+      if (/^(?:submit|show\s*answer|next\s*question|next|check|skip)$/i.test(txt)) {
+        actionBtn = btn;
+        if (/^(?:submit|show\s*answer)$/i.test(txt)) break;
+      }
+    }
+
+    if (actionBtn) {
+      let curr = actionBtn.parentElement;
+      let candidateCard = null;
+      while (curr && curr !== doc.body && curr !== doc.documentElement) {
+        const currText = curr.textContent || "";
+        // Stop before the top navbar that encloses the whole page
+        if (/mcq\s*practice|end\s*practice|questions?\s*attempted/i.test(currText)) {
+          break;
+        }
+
+        // Substantial container enclosing content above buttons
+        if (curr.children && curr.children.length >= 2) {
+          candidateCard = curr;
+        }
+
+        curr = curr.parentElement;
+      }
+
+      if (candidateCard) {
+        return candidateCard;
+      }
+    }
+
+    // 3. Fallbacks
+    const generic = Array.from(doc.querySelectorAll("main, [role='main'], form, .card")).filter(isVisible);
+    for (const el of generic) {
+      if (!isExplanationOrFeedback(el)) return el;
+    }
+
+    return null;
+  }
+
+  /**
+   * Classless Option Group Discovery (for styled-components / sc-... without radio inputs or semantic classes).
+   */
+  function findClasslessOptionElements(scopeRoot, docRef) {
+    const scope = scopeRoot || docRef || (typeof document !== "undefined" ? document : null);
+    if (!scope) return [];
+
+    const actionButtons = Array.from(scope.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")).filter(isVisible);
+    let actionBoundary = null;
+    for (const btn of actionButtons) {
+      const txt = cleanText(btn.textContent || btn.value || "");
+      if (/^(?:submit|show\s*answer|next\s*question|next|check|skip|end\s*practice)$/i.test(txt)) {
+        actionBoundary = btn;
+        break;
+      }
+    }
+
+    const candidateContainers = Array.from(scope.querySelectorAll("div, ul, ol")).filter(isVisible);
+    for (let i = candidateContainers.length - 1; i >= 0; i--) {
+      const container = candidateContainers[i];
+      if (container === scope) continue;
+      if (actionBoundary && container.contains && container.contains(actionBoundary)) continue;
+
+      const children = Array.from(container.children || []).filter(isVisible);
+      if (children.length < 2 || children.length > 6) continue;
+
+      const firstTag = (children[0].tagName || "").toLowerCase();
+      if (!["div", "li", "button", "label", "span"].includes(firstTag)) continue;
+      const allSameTag = children.every(c => (c.tagName || "").toLowerCase() === firstTag);
+      if (!allSameTag) continue;
+
+      const hasActionBtn = children.some(c => {
+        const txt = cleanText(c.textContent || "");
+        return /^(?:show\s*answer|submit|skip|next\s*question|next|end\s*practice|practice\s*instructions)$/i.test(txt);
+      });
+      if (hasActionBtn) continue;
+
+      const texts = children.map(c => getCleanVisibleText(c));
+      const validTexts = texts.every(t => t.length >= 1 && t.length <= 300 && !isHeaderOrNavText(t));
+      if (!validTexts) continue;
+
+      const uniqueTexts = new Set(texts);
+      if (uniqueTexts.size < 2) continue;
+
+      return children;
+    }
+
+    return [];
   }
 
   /**
@@ -402,16 +534,22 @@
       }
     }
     if (subject === "General") {
-      // Check for topic headers like "MCQ PRACTICE | PROBABILITY RULES AND THEOREM"
-      const titleMatches = doc.querySelectorAll("h1, h2, h3, h4, .quiz-title, header, .header, nav, [class*='header'], [class*='title']");
+      // Check for topic headers like "MCQ PRACTICE | PROBABILITY RULES AND THEOREM" (with or without space after |)
+      const titleMatches = doc.querySelectorAll("h1, h2, h3, h4, .quiz-title, header, .header, nav, [class*='header'], [class*='title'], div, span, p");
       for (const el of titleMatches) {
         if (isVisible(el)) {
           const txt = getCleanVisibleText(el);
-          const topicMatch = txt.match(/(?:mcq\s*practice|practice|quiz|test|assessment)\s*[\|:\-]\s*([^\|:\n]+)/i);
+          const topicMatch = txt.match(/mcq\s*practice\s*\|\s*([^\n\r\t]+)/i) ||
+                             txt.match(/(?:mcq\s*practice|practice|quiz|test|assessment)\s*[\|:\-]\s*([^\n\r\t]+)/i);
           if (topicMatch && topicMatch[1]) {
-            subject = cleanText(topicMatch[1]);
-            matchedSelectors.subject = "practice-topic-header";
-            break;
+            let rawTopic = topicMatch[1].trim();
+            rawTopic = rawTopic.replace(/\s*(?:score\s*:|questions?\s*attempted|practice\s*instructions|end\s*practice|id\s*:).*$/i, "");
+            rawTopic = cleanText(rawTopic);
+            if (rawTopic.length >= 2) {
+              subject = rawTopic;
+              matchedSelectors.subject = "practice-topic-header";
+              break;
+            }
           }
         }
       }
@@ -437,7 +575,85 @@
       }
     }
 
-    // 2. EXTRACT QUESTION TEXT (Supports multi-block, code snippets, declarative prompts, ignores explanations)
+    // 2. DISCOVER CARD CONTAINER AND OPTIONS
+    const quizCard = findQuizCard(doc);
+
+    let options = [];
+    let qType = forcedQType && forcedQType !== "auto" ? forcedQType : "auto";
+    let isDraggableOrder = false;
+    let optionElements = [];
+    if (custom.optionsSelector) {
+      const found = Array.from(doc.querySelectorAll(custom.optionsSelector)).filter(isVisible);
+      if (found.length > 0) {
+        optionElements = found;
+        matchedSelectors.options = custom.optionsSelector;
+      }
+    }
+
+    // React / Web App Radio Row Detection
+    // Supports CSS-hidden <input type="radio"> (e.g. display:none or opacity:0) with visible label/card wrappers
+    if (optionElements.length === 0) {
+      const allRadios = Array.from(doc.querySelectorAll("input[type='radio']"));
+      const validRows = [];
+      for (const r of allRadios) {
+        const lbl = r.closest("label") || (r.id ? doc.querySelector(`label[for="${r.id}"]`) : null);
+        const row = lbl || r.closest("[class*='option'], [class*='choice'], [class*='radio'], li, tr") || r.parentElement;
+        if (isRadioOrOptionVisible(r, row)) {
+          validRows.push(row || r);
+        }
+      }
+      if (validRows.length >= 2 && validRows.length <= 10) {
+        optionElements = validRows;
+        matchedSelectors.options = "input[type='radio']";
+      }
+    }
+
+    // Heuristics for options if not found via radio inputs
+    if (optionElements.length === 0) {
+      const optionGroupHeuristics = [
+        "[data-quiz-option]",
+        ".quiz-option",
+        ".option-item",
+        ".draggable-item",
+        "[draggable='true']",
+        "[role='option']",
+        "[role='radio']",
+        "[class*='radio-item']",
+        "[class*='radioItem']",
+        "[class*='option-item']",
+        "[class*='optionItem']",
+        "[class*='choice-item']",
+        "[class*='choiceItem']",
+        ".quiz-choice",
+        ".option-card",
+        "li.choice",
+        ".order-item",
+        ".sortable-block",
+        "[role='radiogroup'] > *",
+        "ul[class*='option'] > li",
+        "ol[class*='option'] > li"
+      ];
+
+      for (const sel of optionGroupHeuristics) {
+        const matches = Array.from(doc.querySelectorAll(sel)).filter(isVisible);
+        if (matches.length >= 2 && matches.length <= 10) {
+          optionElements = matches;
+          matchedSelectors.options = sel;
+          break;
+        }
+      }
+    }
+
+    // Classless styled-components option group discovery (e.g. learning.ccbp.in)
+    if (optionElements.length === 0) {
+      const classless = findClasslessOptionElements(quizCard || doc, doc);
+      if (classless.length >= 2) {
+        optionElements = classless;
+        matchedSelectors.options = "classless-styled-options";
+      }
+    }
+
+    // 3. EXTRACT QUESTION TEXT (Supports multi-block, code snippets, declarative prompts, ignores explanations)
     let question = "";
     if (custom.questionSelector) {
       const el = doc.querySelector(custom.questionSelector);
@@ -449,22 +665,34 @@
 
     // React card search: search question containers for multi-block stems (prompts + <pre><code>)
     if (!question) {
-      const cardContainers = Array.from(doc.querySelectorAll(
+      const cardContainers = (quizCard ? [quizCard] : Array.from(doc.querySelectorAll(
         "[class*='question-card'], [class*='questionCard'], [class*='questionContainer'], [class*='question-container'], [class*='quiz-card'], [class*='quizCard'], [class*='quiz-container'], [class*='quizContainer'], [class*='practice-card'], [class*='problem-card'], [class*='mcq-card'], [class*='card'], .card, main, [role='main'], form"
-      )).filter(isVisible);
+      ))).filter(isVisible);
 
       for (const card of cardContainers) {
         if (isExplanationOrFeedback(card)) continue;
 
-        const stemElements = Array.from(card.querySelectorAll("p, pre, code, table, h2, h3, h4, [class*='question']")).filter(isVisible);
+        const allDescendants = Array.from(card.querySelectorAll("*"));
+        const firstOpt = (optionElements && optionElements.length > 0) ? optionElements[0] : null;
+        const firstOptIndex = firstOpt ? allDescendants.indexOf(firstOpt) : -1;
+        const hrEl = card.querySelector("hr");
+        const hrIndex = hrEl ? allDescendants.indexOf(hrEl) : -1;
+
+        const stemCandidates = Array.from(card.querySelectorAll("p, pre, code, table, h2, h3, h4, div, span, [class*='question']")).filter(isVisible);
         const stemParts = [];
 
-        for (const el of stemElements) {
+        for (const el of stemCandidates) {
+          const elIdx = allDescendants.indexOf(el);
+          if (firstOptIndex !== -1 && elIdx >= firstOptIndex) continue;
+          if (hrIndex !== -1 && elIdx >= hrIndex) continue;
+          if (firstOpt && el.contains && el.contains(firstOpt)) continue;
+
           // Avoid elements inside option lists, radio groups, buttons, top-bars, or explanation drawers
           if (el.closest && (el.closest("[class*='option'], [class*='choice'], [class*='radio'], label, button, .react-top-bar, footer") || isExplanationOrFeedback(el))) {
             continue;
           }
-          if (el.querySelector && el.querySelector("input[type='radio'], [role='radio'], [class*='option']")) {
+          if (el.tagName && el.tagName.toLowerCase() === "button") continue;
+          if (el.querySelector && el.querySelector("input[type='radio'], [role='radio'], [class*='option'], button")) {
             continue;
           }
 
@@ -487,8 +715,11 @@
               stemParts.push(formattedCode);
             }
           } else {
+            const hasBlockChildren = el.querySelector("p, h1, h2, h3, h4, pre, code, table");
+            if (hasBlockChildren) continue;
+
             const txt = getCleanVisibleText(el);
-            if (txt.length >= 10 && !isHeaderOrNavText(txt) && !stemParts.some(p => p.includes(txt))) {
+            if (txt.length >= 8 && !isHeaderOrNavText(txt) && !stemParts.some(p => p.includes(txt))) {
               stemParts.push(txt);
             }
           }
@@ -557,75 +788,6 @@
         if (txt.length >= 12 && !isHeaderOrNavText(txt) && !/quiz|test|exam|instructions/i.test(txt)) {
           question = txt;
           matchedSelectors.question = "heading-fallback";
-          break;
-        }
-      }
-    }
-
-    // 3. EXTRACT OPTIONS & CLASSIFY QUESTION TYPE
-    let options = [];
-    let qType = forcedQType && forcedQType !== "auto" ? forcedQType : "auto";
-    let isDraggableOrder = false;
-
-    // Check for custom option elements
-    let optionElements = [];
-    if (custom.optionsSelector) {
-      const found = Array.from(doc.querySelectorAll(custom.optionsSelector)).filter(isVisible);
-      if (found.length > 0) {
-        optionElements = found;
-        matchedSelectors.options = custom.optionsSelector;
-      }
-    }
-
-    // React / Web App Radio Row Detection
-    // Supports CSS-hidden <input type="radio"> (e.g. display:none or opacity:0) with visible label/card wrappers
-    if (optionElements.length === 0) {
-      const allRadios = Array.from(doc.querySelectorAll("input[type='radio']"));
-      const validRows = [];
-      for (const r of allRadios) {
-        const lbl = r.closest("label") || (r.id ? doc.querySelector(`label[for="${r.id}"]`) : null);
-        const row = lbl || r.closest("[class*='option'], [class*='choice'], [class*='radio'], li, tr") || r.parentElement;
-        if (isRadioOrOptionVisible(r, row)) {
-          validRows.push(row || r);
-        }
-      }
-      if (validRows.length >= 2 && validRows.length <= 10) {
-        optionElements = validRows;
-        matchedSelectors.options = "input[type='radio']";
-      }
-    }
-
-    // Heuristics for options if not found via radio inputs
-    if (optionElements.length === 0) {
-      const optionGroupHeuristics = [
-        "[data-quiz-option]",
-        ".quiz-option",
-        ".option-item",
-        ".draggable-item",
-        "[draggable='true']",
-        "[role='option']",
-        "[role='radio']",
-        "[class*='radio-item']",
-        "[class*='radioItem']",
-        "[class*='option-item']",
-        "[class*='optionItem']",
-        "[class*='choice-item']",
-        "[class*='choiceItem']",
-        ".quiz-choice",
-        ".option-card",
-        "li.choice",
-        ".order-item",
-        ".sortable-block",
-        "[role='radiogroup'] > *",
-        "ul[class*='option'] > li",
-        "ol[class*='option'] > li"
-      ];
-
-      for (const sel of optionGroupHeuristics) {
-        const matches = Array.from(doc.querySelectorAll(sel)).filter(isVisible);
-        if (matches.length >= 2 && matches.length <= 10) {
-          optionElements = matches;
-          matchedSelectors.options = sel;
           break;
         }
       }
@@ -814,14 +976,30 @@
     getCleanVisibleText,
     isHeaderOrNavText,
     isExplanationOrFeedback,
+    findQuizCard,
+    findClasslessOptionElements,
     extractQuizFromDom,
     applyDomHighlight
   };
 
   if (typeof window !== "undefined") {
     window.QuizZyExtractor = QuizZyExtractor;
+    window.__QuizZyExtractor = QuizZyExtractor;
   }
+
+  const __QUIZZY_EXTRACTION_RESULT__ = (typeof document !== "undefined")
+    ? extractQuizFromDom()
+    : { success: false, error: "No document object available for extraction." };
+
+  if (typeof window !== "undefined") {
+    window.__QUIZZY_LAST_EXTRACTION__ = __QUIZZY_EXTRACTION_RESULT__;
+  }
+
   if (typeof module !== "undefined" && module.exports) {
     module.exports = QuizZyExtractor;
   }
+
+  return (typeof module !== "undefined" && module.exports)
+    ? QuizZyExtractor
+    : __QUIZZY_EXTRACTION_RESULT__;
 })();

@@ -763,6 +763,9 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!response || !response.success) {
         showAlert(response && response.error ? response.error : "Failed to extract quiz data from active tab.");
         if (response && response.partial) {
+          if (response.partial.subject && inputSubject && response.partial.subject !== "General") {
+            inputSubject.value = response.partial.subject;
+          }
           renderPreview(response.partial);
         }
         if (callback) callback(null);
@@ -772,7 +775,12 @@ document.addEventListener("DOMContentLoaded", () => {
       extractedState = response;
       renderPreview(response);
 
-      if (response.subject && inputSubject && (!inputSubject.value || inputSubject.value === "General")) {
+      if (response.subject && inputSubject && response.subject.trim() && response.subject !== "General") {
+        inputSubject.value = response.subject;
+        try {
+          chrome.storage.local.set({ subject: response.subject });
+        } catch (e) {}
+      } else if (response.subject && inputSubject && (!inputSubject.value || inputSubject.value === "General")) {
         inputSubject.value = response.subject;
       }
 
@@ -800,7 +808,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (btnExtractSolve) btnExtractSolve.disabled = true;
 
     const payload = {
-      subject: (inputSubject ? inputSubject.value || "General" : "General").trim(),
+      subject: (extracted.subject && extracted.subject !== "General" ? extracted.subject : (inputSubject ? inputSubject.value || "General" : "General")).trim(),
       q_type: (selectQType && selectQType.value !== "auto") ? selectQType.value : extracted.q_type,
       question: (previewQuestion ? previewQuestion.value || extracted.question : extracted.question).trim(),
       options: extracted.options || [],

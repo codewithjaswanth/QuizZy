@@ -195,9 +195,19 @@
    */
   function isExplanationOrFeedback(el) {
     if (!el || el.nodeType !== 1) return false;
+    const tag = (el.tagName || "").toLowerCase();
+    if (tag === "button" || tag === "input") {
+      return false;
+    }
 
     let curr = el;
     while (curr && curr !== (typeof document !== "undefined" ? document.body : null)) {
+      const currTag = (curr.tagName || "").toLowerCase();
+      if (currTag === "button") {
+        curr = curr.parentElement;
+        continue;
+      }
+
       const cls = (curr.className && typeof curr.className === "string") ? curr.className : "";
       const id = curr.id || "";
       if (/\b(explanation|solution|feedback|answer-key|hint-box|correct-answer|result-drawer|explanation-container|explanation-drawer)\b/i.test(`${cls} ${id}`)) {
@@ -206,9 +216,9 @@
 
       if (curr.firstElementChild) {
         const firstTag = curr.firstElementChild.tagName ? curr.firstElementChild.tagName.toLowerCase() : "";
-        if (/^h[1-6]$/.test(firstTag) || firstTag === "strong" || firstTag === "b") {
+        if (firstTag !== "button" && (/^h[1-6]$/.test(firstTag) || firstTag === "strong" || firstTag === "b")) {
           const headingText = (curr.firstElementChild.innerText || curr.firstElementChild.textContent || "").trim();
-          if (/^\s*(explanation|solution|correct answer|your answer|hint|note\s*:|answer\s*:)/i.test(headingText)) {
+          if (/^\s*(explanation|solution|correct answer|your answer|hint|note\s*:|answer\s*:)/i.test(headingText) && !/show\s*answer/i.test(headingText)) {
             return true;
           }
         }
@@ -217,9 +227,9 @@
       const prev = curr.previousElementSibling;
       if (prev) {
         const prevTag = prev.tagName ? prev.tagName.toLowerCase() : "";
-        if (/^h[1-6]$/.test(prevTag) || prevTag === "strong" || prevTag === "b") {
+        if (prevTag !== "button" && (/^h[1-6]$/.test(prevTag) || prevTag === "strong" || prevTag === "b")) {
           const headingText = (prev.innerText || prev.textContent || "").trim();
-          if (/^\s*(explanation|solution|correct answer|your answer|hint|note\s*:|answer\s*:)/i.test(headingText)) {
+          if (/^\s*(explanation|solution|correct answer|your answer|hint|note\s*:|answer\s*:)/i.test(headingText) && !/show\s*answer/i.test(headingText)) {
             return true;
           }
         }
@@ -246,10 +256,131 @@
       /time\s*left/i,
       /remaining\s*time/i,
       /show\s*answer/i,
+      /submit/i,
+      /skip/i,
+      /next\s*question/i,
+      /id\s*:/i,
+      /if\s*you\s*skip/i,
       /view\s*report/i,
       /all\s*rights\s*reserved/i
     ];
     return blacklist.some((rx) => rx.test(lower));
+  }
+
+  /**
+   * Finds the Quiz Card container.
+   * Supports semantic card classes, button-anchored cards (for classless styled-components), and generic main/form/card elements.
+   */
+  function findQuizCard(doc) {
+    if (!doc) return null;
+
+    // 1. Semantic card classes
+    const semanticSelectors = [
+      "[class*='question-card']", "[class*='questionCard']",
+      "[class*='questionContainer']", "[class*='question-container']",
+      "[class*='quiz-card']", "[class*='quizCard']",
+      "[class*='quiz-container']", "[class*='quizContainer']",
+      "[class*='practice-card']", "[class*='problem-card']",
+      "[class*='mcq-card']"
+    ];
+    for (const sel of semanticSelectors) {
+      const found = Array.from(doc.querySelectorAll(sel)).filter(isVisible);
+      for (const el of found) {
+        if (!isExplanationOrFeedback(el)) return el;
+      }
+    }
+
+    // 2. Button-anchored discovery (for styled-components / sc-...)
+    const buttons = Array.from(doc.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")).filter(isVisible);
+    let actionBtn = null;
+    for (const btn of buttons) {
+      const txt = cleanText(btn.textContent || btn.value || "");
+      if (/^(?:submit|show\s*answer|next\s*question|next|check|skip)$/i.test(txt)) {
+        actionBtn = btn;
+        if (/^(?:submit|show\s*answer)$/i.test(txt)) break;
+      }
+    }
+
+    if (actionBtn) {
+      let curr = actionBtn.parentElement;
+      let candidateCard = null;
+      while (curr && curr !== doc.body && curr !== doc.documentElement) {
+        const currText = curr.textContent || "";
+        // Stop before the top navbar that encloses the whole page
+        if (/mcq\s*practice|end\s*practice|questions?\s*attempted/i.test(currText)) {
+          break;
+        }
+
+        // Substantial container enclosing content above buttons
+        if (curr.children && curr.children.length >= 2) {
+          candidateCard = curr;
+        }
+
+        curr = curr.parentElement;
+      }
+
+      if (candidateCard) {
+        return candidateCard;
+      }
+    }
+
+    // 3. Fallbacks
+    const generic = Array.from(doc.querySelectorAll("main, [role='main'], form, .card")).filter(isVisible);
+    for (const el of generic) {
+      if (!isExplanationOrFeedback(el)) return el;
+    }
+
+    return null;
+  }
+
+  /**
+   * Classless Option Group Discovery (for styled-components / sc-... without radio inputs or semantic classes).
+   */
+  function findClasslessOptionElements(scopeRoot, docRef) {
+    const scope = scopeRoot || docRef || (typeof document !== "undefined" ? document : null);
+    if (!scope) return [];
+
+    const actionButtons = Array.from(scope.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")).filter(isVisible);
+    let actionBoundary = null;
+    for (const btn of actionButtons) {
+      const txt = cleanText(btn.textContent || btn.value || "");
+      if (/^(?:submit|show\s*answer|next\s*question|next|check|skip|end\s*practice)$/i.test(txt)) {
+        actionBoundary = btn;
+        break;
+      }
+    }
+
+    const candidateContainers = Array.from(scope.querySelectorAll("div, ul, ol")).filter(isVisible);
+    for (let i = candidateContainers.length - 1; i >= 0; i--) {
+      const container = candidateContainers[i];
+      if (container === scope) continue;
+      if (actionBoundary && container.contains && container.contains(actionBoundary)) continue;
+
+      const children = Array.from(container.children || []).filter(isVisible);
+      if (children.length < 2 || children.length > 6) continue;
+
+      const firstTag = (children[0].tagName || "").toLowerCase();
+      if (!["div", "li", "button", "label", "span"].includes(firstTag)) continue;
+      const allSameTag = children.every(c => (c.tagName || "").toLowerCase() === firstTag);
+      if (!allSameTag) continue;
+
+      const hasActionBtn = children.some(c => {
+        const txt = cleanText(c.textContent || "");
+        return /^(?:show\s*answer|submit|skip|next\s*question|next|end\s*practice|practice\s*instructions)$/i.test(txt);
+      });
+      if (hasActionBtn) continue;
+
+      const texts = children.map(c => getCleanVisibleText(c));
+      const validTexts = texts.every(t => t.length >= 1 && t.length <= 300 && !isHeaderOrNavText(t));
+      if (!validTexts) continue;
+
+      const uniqueTexts = new Set(texts);
+      if (uniqueTexts.size < 2) continue;
+
+      return children;
+    }
+
+    return [];
   }
 
   /**
@@ -385,6 +516,14 @@
         return matches;
       }
     }
+
+    // Classless styled-components option group discovery (e.g. learning.ccbp.in)
+    const quizCard = findQuizCard(doc);
+    const classlessOptions = findClasslessOptionElements(quizCard || doc, doc);
+    if (classlessOptions.length >= 2) {
+      return classlessOptions;
+    }
+
     return [];
   }
 
@@ -457,6 +596,12 @@
     const clicked = dispatchClick(clickTarget);
     if (radio && radio !== clickTarget) {
       dispatchClick(radio);
+    }
+
+    // Also dispatch on inner circle indicator or text child so React synthetic onClick fires whether attached to row or inner target
+    const innerTarget = targetEl.querySelector("input, [class*='circle'], [class*='radio'], [class*='opt-text'], [class*='text'], label, span");
+    if (innerTarget && innerTarget !== clickTarget && innerTarget !== radio) {
+      dispatchClick(innerTarget);
     }
 
     // 2. React 16-18 controlled radio fallback: only if radio is STILL not checked after click
@@ -972,6 +1117,8 @@
     isExplanationOrFeedback,
     isVisible,
     isRadioOrOptionVisible,
+    findQuizCard,
+    findClasslessOptionElements,
     dispatchClick,
     findOptionElements,
     executeMcqAction,
@@ -984,8 +1131,11 @@
 
   if (typeof window !== "undefined") {
     window.QuizZyExecutor = QuizZyExecutor;
+    window.__QuizZyExecutor = QuizZyExecutor;
   }
   if (typeof module !== "undefined" && module.exports) {
     module.exports = QuizZyExecutor;
   }
+
+  return QuizZyExecutor;
 })();
