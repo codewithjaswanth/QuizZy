@@ -21,3 +21,8 @@ __pycache__/
 # Evaluation output artifacts
 eval/results/*.json
 !eval/results/.gitkeep
+
+# Runtime server logs and supervisor lockfile
+backend/server.log
+backend/supervisor.lock
+*.log
