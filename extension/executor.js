@@ -24,6 +24,198 @@
   }
 
   /**
+   * Normalizes TeX/LaTeX formulas from KaTeX annotation elements.
+   * Mirrors 1:1 implementation in extractor.js.
+   */
+  function normalizeTeX(tex) {
+    if (!tex) return "";
+    let s = String(tex).trim();
+
+    // 1. Loop-flatten inner constructs before and alongside fractions
+    for (let pass = 0; pass < 4; pass++) {
+      const prev = s;
+      s = s.replace(/\\left\s*([(\[{|.\\])/g, "$1")
+           .replace(/\\right\s*([)\]}|.\\])/g, "$1")
+           .replace(/\\text\{([^{}]+)\}/g, "$1")
+           .replace(/\^\{([^{}]+)\}/g, "^$1")
+           .replace(/_\{([^{}]+)\}/g, "_$1")
+           .replace(/\\sqrt\{([^{}]+)\}/g, "sqrt($1)");
+      if (s === prev) break;
+    }
+
+    // 2. Resolve \frac and \dfrac with compound expression grouping
+    for (let pass = 0; pass < 4; pass++) {
+      const prev = s;
+      s = s.replace(/\\d?frac\{([^{}]+)\}\{([^{}]+)\}/g, (m, num, den) => {
+        const cleanNum = num.trim();
+        const cleanDen = den.trim();
+        const wrappedNum = /[+\-]/.test(cleanNum) ? `(${cleanNum})` : cleanNum;
+        const wrappedDen = /[+\-]/.test(cleanDen) ? `(${cleanDen})` : cleanDen;
+        return `${wrappedNum}/${wrappedDen}`;
+      });
+      if (s === prev) break;
+    }
+
+    // 3. Clean operators and formatting commands
+    s = s.replace(/\\times\b/g, "x")
+         .replace(/\\cdot\b/g, "*")
+         .replace(/\\pm\b/g, "+-")
+         .replace(/\\neq\b/g, "!=")
+         .replace(/\\leq\b/g, "<=")
+         .replace(/\\geq\b/g, ">=")
+         .replace(/\\approx\b/g, "~=")
+         .replace(/\\pi\b/g, "pi")
+         .replace(/\\infty\b/g, "inf")
+         .replace(/\\[a-zA-Z]+/g, " ")
+         .replace(/[{}]/g, "")
+         .replace(/\s+/g, " ")
+         .trim();
+
+    return s;
+  }
+
+  /**
+   * Extracts clean visible text from elements while preserving KaTeX math formulas.
+   * Mirrors 1:1 implementation in extractor.js.
+   */
+  function getCleanVisibleText(rootEl) {
+    if (!rootEl) return "";
+    let extracted = "";
+
+    function walk(node) {
+      if (!node) return;
+      if (node.nodeType === 3) {
+        extracted += node.nodeValue;
+        return;
+      }
+      if (node.nodeType !== 1) return;
+
+      const tag = node.tagName.toLowerCase();
+      if (tag === "script" || tag === "style" || tag === "noscript") return;
+
+      const cls = (node.className && typeof node.className === "string") ? node.className : "";
+      if (cls.includes("katex-mathml") || cls.includes("MJX_Assistive_MathML")) return;
+      if (tag === "annotation" || tag === "annotation-xml") return;
+
+      if (cls.includes("katex")) {
+        const texAnno = node.querySelector("annotation[encoding*='tex']");
+        if (texAnno && texAnno.textContent) {
+          extracted += " " + normalizeTeX(texAnno.textContent) + " ";
+          return;
+        }
+      }
+
+      if (tag === "mjx-container" || cls.includes("MathJax")) {
+        const texAnno = node.querySelector("annotation[encoding*='tex']");
+        if (texAnno && texAnno.textContent) {
+          extracted += " " + normalizeTeX(texAnno.textContent) + " ";
+          return;
+        }
+        const texAttr = node.getAttribute("data-tex") || node.getAttribute("alt");
+        if (texAttr) {
+          extracted += " " + normalizeTeX(texAttr) + " ";
+          return;
+        }
+      }
+
+      for (let i = 0; i < node.childNodes.length; i++) {
+        walk(node.childNodes[i]);
+      }
+    }
+
+    walk(rootEl);
+    return extracted.replace(/\s+/g, " ").trim();
+  }
+
+  /**
+   * Strips decorative option prefixes (e.g. 'A. ', '(B) ', '1) ') while strictly
+   * protecting mathematical subtraction and algebra expressions.
+   * Mirrors 1:1 implementation in extractor.js.
+   */
+  function stripDecorativePrefix(text) {
+    if (!text || typeof text !== "string") return "";
+    let s = text.trim();
+
+    // 1. Parenthesized or bracketed letter/digit prefix
+    s = s.replace(/^\(\s*([A-Fa-f0-9]{1,2})\s*\)\s+/, "");
+    s = s.replace(/^\[\s*([A-Fa-f0-9]{1,2})\s*\]\s+/, "");
+
+    // 2. Bare option letter [A-Fa-f] followed immediately by . or ) or :
+    s = s.replace(/^[A-Fa-f][\.\)\:]\s+/, "");
+
+    // 3. Digit prefix followed immediately by . or )
+    s = s.replace(/^[0-9]{1,2}[\.\)]\s+/, "");
+
+    // 4. Bullet symbols
+    s = s.replace(/^[\u2022\u25E6\u25AA\u2023]\s*/, "");
+
+    return s.trim();
+  }
+
+  /**
+   * Checks if an element is part of an explanation, solution, or feedback container.
+   * Mirrors 1:1 implementation in extractor.js.
+   */
+  function isExplanationOrFeedback(el) {
+    if (!el || el.nodeType !== 1) return false;
+
+    let curr = el;
+    while (curr && curr !== (typeof document !== "undefined" ? document.body : null)) {
+      const cls = (curr.className && typeof curr.className === "string") ? curr.className : "";
+      const id = curr.id || "";
+      if (/\b(explanation|solution|feedback|answer-key|hint-box|correct-answer|result-drawer|explanation-container|explanation-drawer)\b/i.test(`${cls} ${id}`)) {
+        return true;
+      }
+
+      if (curr.firstElementChild) {
+        const firstTag = curr.firstElementChild.tagName ? curr.firstElementChild.tagName.toLowerCase() : "";
+        if (/^h[1-6]$/.test(firstTag) || firstTag === "strong" || firstTag === "b") {
+          const headingText = (curr.firstElementChild.innerText || curr.firstElementChild.textContent || "").trim();
+          if (/^\s*(explanation|solution|correct answer|your answer|hint|note\s*:|answer\s*:)/i.test(headingText)) {
+            return true;
+          }
+        }
+      }
+
+      const prev = curr.previousElementSibling;
+      if (prev) {
+        const prevTag = prev.tagName ? prev.tagName.toLowerCase() : "";
+        if (/^h[1-6]$/.test(prevTag) || prevTag === "strong" || prevTag === "b") {
+          const headingText = (prev.innerText || prev.textContent || "").trim();
+          if (/^\s*(explanation|solution|correct answer|your answer|hint|note\s*:|answer\s*:)/i.test(headingText)) {
+            return true;
+          }
+        }
+      }
+
+      curr = curr.parentElement;
+    }
+    return false;
+  }
+
+  /**
+   * Blacklist for header and navigation elements.
+   */
+  function isHeaderOrNavText(text) {
+    if (!text) return true;
+    const lower = text.toLowerCase();
+    const blacklist = [
+      /mcq\s*practice/i,
+      /practice\s*instructions/i,
+      /end\s*practice/i,
+      /practice\s*summary/i,
+      /questions?\s*attempted/i,
+      /score\s*:/i,
+      /time\s*left/i,
+      /remaining\s*time/i,
+      /show\s*answer/i,
+      /view\s*report/i,
+      /all\s*rights\s*reserved/i
+    ];
+    return blacklist.some((rx) => rx.test(lower));
+  }
+
+  /**
    * Checks if an element is visible in the layout.
    */
   function isVisible(el) {
@@ -102,13 +294,16 @@
 
   /**
    * Finds option elements using custom selector or deterministic heuristics.
+   * Excludes header/nav text and explanation boxes matching extractor.js rules.
    */
   function findOptionElements(customSelector) {
     const doc = (typeof document !== "undefined") ? document : null;
     if (!doc) return [];
 
     if (customSelector) {
-      const customMatches = Array.from(doc.querySelectorAll(customSelector)).filter(isVisible);
+      const customMatches = Array.from(doc.querySelectorAll(customSelector))
+        .filter(isVisible)
+        .filter((el) => !isExplanationOrFeedback(el) && !isHeaderOrNavText(cleanText(el.innerText || el.textContent || "")));
       if (customMatches.length > 0) return customMatches;
     }
 
@@ -119,7 +314,9 @@
       const lbl = r.closest("label") || (r.id ? doc.querySelector(`label[for="${r.id}"]`) : null);
       const row = lbl || r.closest("[class*='option'], [class*='choice'], [class*='radio'], li, tr") || r.parentElement;
       if (isRadioOrOptionVisible(r, row)) {
-        radioRows.push(row || r);
+        if (!isExplanationOrFeedback(row) && !isHeaderOrNavText(cleanText(row.innerText || row.textContent || ""))) {
+          radioRows.push(row || r);
+        }
       }
     }
     if (radioRows.length >= 2 && radioRows.length <= 10) {
@@ -144,7 +341,9 @@
     ];
 
     for (const sel of optionHeuristics) {
-      const matches = Array.from(doc.querySelectorAll(sel)).filter(isVisible);
+      const matches = Array.from(doc.querySelectorAll(sel))
+        .filter(isVisible)
+        .filter((el) => !isExplanationOrFeedback(el) && !isHeaderOrNavText(cleanText(el.innerText || el.textContent || "")));
       if (matches.length >= 2 && matches.length <= 10) {
         return matches;
       }
@@ -154,17 +353,41 @@
 
   /**
    * Executes plain DOM click on targeted MCQ option.
-   * Handles React 16-18 controlled radio selection without corrupting _valueTracker.
+   * Handles 1:1 text parity with extractor.js and React 16-18 controlled radio selection.
    */
   function executeMcqAction(payload) {
-    const targetIndex = payload.selected_index;
-    if (typeof targetIndex !== "number" || targetIndex < 0) {
-      return { success: false, error: `Invalid selected_index: ${targetIndex}` };
-    }
-
     const options = findOptionElements(payload.optionsSelector);
     if (options.length === 0) {
       return { success: false, error: "No option elements found on host page." };
+    }
+
+    let targetIndex = (typeof payload.selected_index === "number" && payload.selected_index >= 0)
+      ? payload.selected_index
+      : null;
+
+    const targetText = payload.targetText || payload.selected_text || payload.answer || null;
+    const cleanTargetText = targetText ? stripDecorativePrefix(cleanText(targetText)) : null;
+
+    // Clean text representations of all options using 1:1 extractor-identical logic
+    const optionCleanTexts = options.map((optEl) => {
+      return stripDecorativePrefix(getCleanVisibleText(optEl)).trim();
+    });
+
+    // If targetText was supplied, try matching by clean text first for full text parity
+    if (cleanTargetText) {
+      const textIdx = optionCleanTexts.findIndex((optText) => {
+        return optText === cleanTargetText || optText.toLowerCase() === cleanTargetText.toLowerCase();
+      });
+      if (textIdx !== -1) {
+        targetIndex = textIdx;
+      }
+    }
+
+    if (targetIndex === null || typeof targetIndex !== "number" || targetIndex < 0) {
+      return {
+        success: false,
+        error: `Invalid or unmatched target option (selected_index: ${payload.selected_index}, targetText: ${targetText})`
+      };
     }
 
     if (targetIndex >= options.length) {
@@ -222,7 +445,7 @@
       success: clicked,
       action: "mcq_click",
       selected_index: targetIndex,
-      option_text: cleanText(targetEl.innerText || targetEl.textContent)
+      option_text: optionCleanTexts[targetIndex] || cleanText(targetEl.innerText || targetEl.textContent)
     };
   }
 
@@ -520,9 +743,29 @@
     function isQuizCompleted(d) {
       if (!d) return false;
       const root = d.body || d;
-      const bodyText = root.innerText || root.textContent || "";
+      const bodyText = (root.innerText || root.textContent || "").toLowerCase();
 
-      // 1. Check "QUESTIONS ATTEMPTED: X/Y" where X === Y and X > 0
+      // NEVER treat "END PRACTICE" as completion
+      // 1. Dedicated completion summary view or congratulatory screens
+      if (/(?:quiz\s*summary|practice\s*summary|view\s*report|view\s*results|score\s*card|congratulations|assessment\s*completed)/i.test(bodyText)) {
+        if (!bodyText.includes("end practice") || /(?:view\s*report|score\s*card|congratulations|practice\s*summary)/i.test(bodyText)) {
+          return true;
+        }
+      }
+
+      // 2. Check for explicit finish / view report buttons (EXCLUDING "End Practice", "Skip", "Show Answer")
+      const btns = Array.from(d.querySelectorAll("button, a.btn, [role='button'], input[type='button']")).filter(isVisible);
+      for (const b of btns) {
+        const bText = cleanText(b.innerText || b.textContent || b.value || "").toLowerCase();
+        if (bText.includes("end practice") || bText === "skip" || bText === "show answer") {
+          continue; // EXPLICITLY IGNORE
+        }
+        if (/^(?:finish|view\s*report|view\s*results|review\s*test)\b/i.test(bText)) {
+          return true;
+        }
+      }
+
+      // 3. Check "QUESTIONS ATTEMPTED: X/Y" where X === Y and X > 0
       const match = bodyText.match(/questions?\s*attempted\s*:\s*(\d+)\s*\/\s*(\d+)/i);
       if (match && match[1] && match[2]) {
         const attempted = parseInt(match[1], 10);
@@ -530,17 +773,6 @@
         if (total > 0 && attempted >= total) {
           return true;
         }
-      }
-
-      // 2. Check summary screen or completion banner
-      if (/(?:quiz\s*completed|practice\s*completed|assessment\s*completed|all\s*questions?\s*(?:attempted|answered)|view\s*report|view\s*summary|quiz\s*summary|practice\s*summary)/i.test(bodyText)) {
-        return true;
-      }
-
-      // 3. Check for finish / view report buttons
-      const btns = Array.from(d.querySelectorAll("button, a.btn, [role='button']")).filter(isVisible);
-      if (btns.some(b => /^(?:finish|view\s*report|view\s*results|review\s*test)\b/i.test(cleanText(b.innerText || b.textContent || b.value)))) {
-        return true;
       }
 
       return false;
@@ -572,6 +804,8 @@
         }
       }
 
+      // If NEXT button appeared, click it and return submit_then_next ALWAYS,
+      // even if "QUESTIONS ATTEMPTED: 15/15" was on the page (e.g. during re-practice)!
       if (postNext) {
         const nextClicked = dispatchClick(postNext);
         const nextText = cleanText(postNext.innerText || postNext.textContent || postNext.value || "Next Question");
@@ -585,8 +819,13 @@
         };
       }
 
-      // If no NEXT button rendered after submit within maxWaitMs, check if quiz completed
-      if (isQuizCompleted(doc)) {
+      // If no NEXT button rendered after submit within maxWaitMs:
+      // Only now evaluate whether the quiz is actually completed!
+      // Check if submit button became disabled or disappeared (or feedback appeared)
+      const currentSubmit = doc.querySelector("button[type='submit'], input[type='submit'], button.btn-submit") || submitBtn;
+      const submitGoneOrDisabled = !currentSubmit || !isVisible(currentSubmit) || currentSubmit.disabled;
+
+      if (submitGoneOrDisabled && isQuizCompleted(doc)) {
         return {
           ok: true,
           success: true,
@@ -594,12 +833,11 @@
           action: "quiz_completed",
           button_text: submitText,
           waited_ms: waitedMs,
-          reason: "All questions attempted and quiz completed."
+          reason: "Final question submitted; quiz completed."
         };
       }
 
-      // If not completed, return next_timeout with descriptive error to prevent false completion
-      const currentSubmit = doc.querySelector("button[type='submit'], input[type='submit'], button.btn-submit") || submitBtn;
+      // If submit button is still enabled and no next button appeared, return next_timeout
       if (currentSubmit && isVisible(currentSubmit) && !currentSubmit.disabled) {
         return {
           ok: false,
@@ -617,7 +855,7 @@
       };
     }
 
-    // (C) If neither Next nor Submit found, check if quiz is already completed
+    // (C) If neither Next nor Submit found, check if dedicated completion summary screen is active
     if (isQuizCompleted(doc)) {
       return {
         ok: true,
@@ -656,9 +894,36 @@
     }
   }
 
+  // Idempotent Escape key listener for host page emergency kill switch
+  if (typeof window !== "undefined") {
+    if (!window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__) {
+      window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__ = true;
+
+      if (typeof window.addEventListener === "function") {
+        window.addEventListener("keydown", (e) => {
+          if (e.key === "Escape" || e.key === "Esc") {
+            try {
+              if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+                chrome.runtime.sendMessage({
+                  action: "KILL_SWITCH_TRIGGERED",
+                  reason: "Escape key pressed on host quiz page. Auto Mode halted."
+                }).catch(() => {});
+              }
+            } catch (err) {}
+          }
+        }, true);
+      }
+    }
+  }
+
   // Export to window for Chrome isolated world execution and module for testing
   const QuizZyExecutor = {
     cleanText,
+    normalizeTeX,
+    getCleanVisibleText,
+    stripDecorativePrefix,
+    isHeaderOrNavText,
+    isExplanationOrFeedback,
     isVisible,
     isRadioOrOptionVisible,
     dispatchClick,

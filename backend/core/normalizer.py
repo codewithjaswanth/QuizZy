@@ -73,8 +73,10 @@ def normalize_text_answer(text: str) -> str:
     # Strip surrounding quotes
     s = s.strip("\"'“”‘’`")
 
-    # Strip leading English articles
-    s = re.sub(r"^(?:a|an|the)\s+", "", s)
+    # Strip leading English articles ONLY when followed by a multi-letter word (prose)
+    # Never strip standalone letters ('A', 'a') or math expressions ('a - b', 'a : b', 'a = b', 'p(a)')
+    s = re.sub(r"^(?:a|an)\s+(?=[a-z]{2,}\b)", "", s)
+    s = re.sub(r"^the\s+(?=[a-z]{2,}\b)", "", s)
 
     # Strip trailing punctuation
     s = re.sub(r"[.,;:!?]+$", "", s).strip()
@@ -117,15 +119,14 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
     # Convert raw_answer to string
     raw_str = str(raw_answer).strip()
 
-    # If answer is like 'B.', '(B)', 'Option B', extract letter
-    letter_match = re.search(r"\b([A-Za-z])\b", raw_str)
+    # Priority 1: Check if answer is explicitly a single letter e.g. 'B', 'B.', '(B)', '[B]', 'Option B'
+    letter_match = re.match(r"^(?:option\s+)?(?:\(?\[?([A-Za-z])\)\]?[\.\:\)]?)$", raw_str, re.IGNORECASE)
     candidate_letter = None
     if letter_match:
         cand = letter_match.group(1).upper()
         if cand in valid_letters:
             candidate_letter = cand
 
-    # If single letter matches directly
     if candidate_letter is not None:
         idx = ord(candidate_letter) - 65
         return NormalizedAnswer(
@@ -135,7 +136,7 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
             raw_answer=raw_answer,
         )
 
-    # Fallback: Check if the LLM output matches the text of an option
+    # Priority 2: Check if the raw string matches the text of an option
     normalized_raw = normalize_text_answer(raw_str)
     for i, opt in enumerate(options):
         if normalize_text_answer(opt) == normalized_raw:
@@ -144,6 +145,19 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
                 canonical_key=letter,
                 selected_index=i,
                 selected_text=options[i],
+                raw_answer=raw_answer,
+            )
+
+    # Priority 3: Fallback loose letter match if no option text matched
+    loose_match = re.search(r"\b([A-Za-z])\b", raw_str)
+    if loose_match:
+        cand = loose_match.group(1).upper()
+        if cand in valid_letters:
+            idx = ord(cand) - 65
+            return NormalizedAnswer(
+                canonical_key=cand,
+                selected_index=idx,
+                selected_text=options[idx],
                 raw_answer=raw_answer,
             )
 

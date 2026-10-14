@@ -111,7 +111,55 @@ document.addEventListener("DOMContentLoaded", () => {
   let autoMaxSteps = 10;
   let autoStepDelay = 800;
   let previousQuestionText = "";
+  let previousQuestionSignature = "";
   let sameQuestionCount = 0;
+
+  /**
+   * Generates a composite question signature combining the full question text
+   * (including multi-line code blocks) and the normalized options list.
+   * This guarantees that consecutive questions with identical prompts (e.g. "Find the output:")
+   * but different code snippets or options are never falsely detected as stuck.
+   */
+  function getQuestionSignature(extracted) {
+    if (!extracted || !extracted.question) return "";
+    const qStr = String(extracted.question || "").trim();
+    const optsStr = Array.isArray(extracted.options)
+      ? extracted.options.map((o) => (typeof o === "string" ? o.trim() : JSON.stringify(o))).join("|")
+      : "";
+    return `${qStr}||${optsStr}`;
+  }
+
+  /**
+   * Deterministically polls the host page until the composite question signature changes,
+   * or until maxWaitMs expires.
+   */
+  function waitForQuestionChange(oldSignature, onReady, maxWaitMs = 3500) {
+    const start = Date.now();
+    const pollInterval = 150;
+
+    function poll() {
+      if (!isAutoRunning || killSwitchTriggered) return;
+
+      performExtraction((newExtracted) => {
+        if (!isAutoRunning || killSwitchTriggered) return;
+
+        const newSig = getQuestionSignature(newExtracted);
+        if (newSig && newSig !== oldSignature) {
+          onReady(newExtracted);
+          return;
+        }
+
+        if (Date.now() - start >= maxWaitMs) {
+          onReady(newExtracted);
+          return;
+        }
+
+        setTimeout(poll, pollInterval);
+      });
+    }
+
+    setTimeout(poll, 250);
+  }
 
   // ==========================================================================
   // Alerts & Notification Helpers
@@ -911,6 +959,7 @@ document.addEventListener("DOMContentLoaded", () => {
     autoMaxSteps = Math.min(100, Math.max(1, parseInt(inputMaxSteps ? inputMaxSteps.value : 10) || 10));
     autoStepDelay = Math.min(5000, Math.max(300, parseInt(inputStepDelay ? inputStepDelay.value : 800) || 800));
     previousQuestionText = "";
+    previousQuestionSignature = "";
     sameQuestionCount = 0;
 
     // UI Updates
@@ -924,7 +973,7 @@ document.addEventListener("DOMContentLoaded", () => {
     runNextAutoStep();
   }
 
-  function runNextAutoStep() {
+  function runNextAutoStep(preExtracted) {
     if (!isAutoRunning || killSwitchTriggered) {
       return;
     }
@@ -943,10 +992,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const currentStepNum = autoStepIndex + 1;
     setTelemetryCounter(currentStepNum, autoMaxSteps);
-    setTelemetryState("RUNNING", `[Step ${currentStepNum}] Extracting quiz question from DOM...`);
 
-    // 1. Extract question from DOM
-    performExtraction((extracted) => {
+    const onExtracted = (extracted) => {
       if (!isAutoRunning || killSwitchTriggered) return;
 
       if (!extracted || !extracted.question) {
@@ -957,9 +1004,9 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Stuck Detection: Check if question is identical to previous after Next click
-      const currentQText = (extracted.question || "").trim().toLowerCase();
-      if (previousQuestionText && currentQText === previousQuestionText) {
+      // Stuck Detection: Check if composite question signature is identical to previous after Next click
+      const currentSignature = getQuestionSignature(extracted);
+      if (previousQuestionSignature && currentSignature === previousQuestionSignature) {
         sameQuestionCount++;
         if (sameQuestionCount >= 2) {
           isAutoRunning = false;
@@ -969,7 +1016,8 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
       } else {
-        previousQuestionText = currentQText;
+        previousQuestionSignature = currentSignature;
+        previousQuestionText = (extracted.question || "").trim().toLowerCase();
         sameQuestionCount = 0;
       }
 
@@ -1098,18 +1146,26 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
               }
 
-              // Advanced to next question, wait brief transition time then loop
+              // Advanced to next question: wait for composite question signature change
               const waitSuffix = nextRes.waited_ms ? ` [waited ${nextRes.waited_ms}ms]` : "";
               const advanceDesc = nextRes.button_text ? ` (${nextRes.button_text}${waitSuffix})` : "";
               setTelemetryState("RUNNING", `[Step ${autoStepIndex}] Advanced to next question${advanceDesc}. Transitioning...`);
-              setTimeout(() => {
-                runNextAutoStep();
-              }, 600);
+
+              waitForQuestionChange(currentSignature, (newExtracted) => {
+                runNextAutoStep(newExtracted);
+              });
             });
           }, autoStepDelay);
         });
       });
-    });
+    };
+
+    if (preExtracted && preExtracted.question) {
+      onExtracted(preExtracted);
+    } else {
+      setTelemetryState("RUNNING", `[Step ${currentStepNum}] Extracting quiz question from DOM...`);
+      performExtraction(onExtracted);
+    }
   }
 
   // Resume button listener (after manual order swap)
@@ -1142,9 +1198,9 @@ document.addEventListener("DOMContentLoaded", () => {
           if (btnStartAuto) btnStartAuto.classList.remove("hidden");
           return;
         }
-        setTimeout(() => {
-          runNextAutoStep();
-        }, 600);
+        waitForQuestionChange(previousQuestionSignature, (newExtracted) => {
+          runNextAutoStep(newExtracted);
+        });
       });
     });
   }

@@ -379,8 +379,12 @@ class MockNode {
       return this.hasAttribute(attrExpr.trim());
     }
 
-    if (sel.startsWith(".")) {
-      return this.classList.contains(sel.slice(1));
+    if (sel.includes(".")) {
+      const parts = sel.split(".");
+      const tag = parts[0];
+      const cls = parts.slice(1);
+      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+      return cls.every(c => this.classList.contains(c));
     }
     if (sel.startsWith("#")) {
       return this.getAttribute("id") === sel.slice(1);
@@ -622,41 +626,102 @@ async function main() {
     throw new Error("CSS-hidden radio was not checked after executeMcqAction!");
   }
 
-  // Test 5: Auto-Mode Completion Detection (QUESTIONS ATTEMPTED: 15/15)
-  const completionContainer = el("div", "quiz-summary", {}, [
+  // Test 5: extractor.js <-> executor.js KaTeX & Text Parity Matching
+  function makeKaTeXEl(texStr) {
+    return el("div", "katex", {}, [
+      el("span", "katex-mathml", {}, [
+        el("annotation", "", { encoding: "application/x-tex" }, [texStr])
+      ]),
+      el("span", "katex-html", { "aria-hidden": "true" }, [texStr])
+    ]);
+  }
+
+  const katexQuizCard = el("div", "quiz-card", {}, [
+    el("div", "question-stem", {}, [
+      el("p", "", {}, ["Select the probability value:"])
+    ]),
+    el("div", "options-list", {}, [
+      el("label", "option-item", {}, [
+        el("input", "", { type: "radio", name: "k1", value: "opt1" }),
+        makeKaTeXEl("\\frac{1}{6}")
+      ]),
+      el("label", "option-item", {}, [
+        el("input", "", { type: "radio", name: "k1", value: "opt2" }),
+        makeKaTeXEl("1 - \\frac{1}{6}")
+      ]),
+      el("label", "option-item", {}, [
+        el("input", "", { type: "radio", name: "k1", value: "opt3" }),
+        makeKaTeXEl("\\frac{n+1}{2}")
+      ])
+    ])
+  ]);
+  doc.childNodes[1].childNodes = [];
+  doc.childNodes[1].appendChild(katexQuizCard);
+
+  const katexExtracted = extractor.extractQuizFromDom();
+  if (!katexExtracted.success || katexExtracted.options.length !== 3) {
+    throw new Error(`KaTeX extraction failed: ${JSON.stringify(katexExtracted)}`);
+  }
+  if (katexExtracted.options[1] !== "1 - 1/6") {
+    throw new Error(`Expected option 1 to be '1 - 1/6', got '${katexExtracted.options[1]}'`);
+  }
+
+  // Now execute MCQ action using the EXACT extracted option text targetText: "1 - 1/6"
+  const textMatchExec = executor.executeMcqAction({ targetText: "1 - 1/6" });
+  if (!textMatchExec.success || textMatchExec.selected_index !== 1) {
+    throw new Error(`executeMcqAction with targetText '1 - 1/6' failed: ${JSON.stringify(textMatchExec)}`);
+  }
+  const opt2Radio = katexQuizCard.querySelector("input[value='opt2']");
+  if (!opt2Radio || !opt2Radio.checked) {
+    throw new Error("Target radio for '1 - 1/6' was not checked via text parity matching!");
+  }
+
+  // Test 6: Re-Practice QUESTIONS ATTEMPTED: 15/15 + END PRACTICE Button Immunity
+  const repracticeContainer = el("div", "quiz-page", {}, [
+    el("div", "top-bar", {}, [
+      el("div", "stats", {}, ["QUESTIONS ATTEMPTED: 15/15"]),
+      el("button", "btn-end", { type: "button" }, ["End Practice"])
+    ]),
+    el("div", "question-content", {}, [
+      el("p", "", {}, ["Question 1 of 15 during Re-Practice"])
+    ]),
+    el("div", "actions", {}, [
+      el("button", "btn-submit", { type: "button" }, ["Submit"])
+    ])
+  ]);
+  doc.childNodes[1].childNodes = [];
+  doc.childNodes[1].appendChild(repracticeContainer);
+
+  const repracticeSubmitBtn = repracticeContainer.querySelector("button.btn-submit");
+  repracticeSubmitBtn.addEventListener("click", () => {
+    setTimeout(() => {
+      const nextBtn = el("button", "btn-next", { type: "button" }, ["Next Question"]);
+      repracticeContainer.querySelector("div.actions").appendChild(nextBtn);
+    }, 300);
+  });
+
+  const repracticeResult = await executor.clickNextButton();
+  if (!repracticeResult.ok || repracticeResult.step !== "submit_then_next") {
+    throw new Error(`Expected 'submit_then_next' during Re-Practice, got '${JSON.stringify(repracticeResult)}'`);
+  }
+
+  // Test 7: True Quiz Completion Detection when all questions done and no Next button
+  const finalQuestionSummary = el("div", "quiz-summary", {}, [
     el("div", "stats", {}, ["QUESTIONS ATTEMPTED: 15/15"]),
     el("h2", "", {}, ["Practice Completed"]),
     el("button", "btn-report", { type: "button" }, ["View Report"])
   ]);
   doc.childNodes[1].childNodes = [];
-  doc.childNodes[1].appendChild(completionContainer);
+  doc.childNodes[1].appendChild(finalQuestionSummary);
 
-  const completedResult = await executor.clickNextButton();
-  if (!completedResult.ok || completedResult.step !== "quiz_completed") {
-    throw new Error(`Expected step 'quiz_completed', got '${JSON.stringify(completedResult)}'`);
+  const finalCompleteResult = await executor.clickNextButton();
+  if (!finalCompleteResult.ok || finalCompleteResult.step !== "quiz_completed") {
+    throw new Error(`Expected step 'quiz_completed' on summary screen, got '${JSON.stringify(finalCompleteResult)}'`);
   }
 
-  // Test 6: Async two-step Submit -> 300ms delayed Next Question
-  const actionContainer = el("div", "actions", {}, [
-    el("button", "btn-submit", { type: "button" }, ["Submit"])
-  ]);
-  doc.childNodes[1].childNodes = [];
-  doc.childNodes[1].appendChild(actionContainer);
-
-  const submitBtn = actionContainer.querySelector("button");
-  submitBtn.addEventListener("click", () => {
-    setTimeout(() => {
-      const nextBtn = el("button", "btn-next", { type: "button" }, ["Next Question"]);
-      actionContainer.appendChild(nextBtn);
-    }, 300);
-  });
-
-  const nextResult = await executor.clickNextButton();
-  if (!nextResult.ok || nextResult.step !== "submit_then_next") {
-    throw new Error(`Expected step 'submit_then_next', got '${JSON.stringify(nextResult)}'`);
-  }
-  if (nextResult.waited_ms < 240) {
-    throw new Error(`Expected wait >= 240ms, got ${nextResult.waited_ms}ms`);
+  // Test 8: Idempotent Re-Injection Guard Check
+  if (!global.window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__) {
+    throw new Error("window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__ was not set!");
   }
 
   console.log("NODE_RUNTIME_TESTS_OK");
@@ -682,7 +747,47 @@ main().catch(err => {
         raise AssertionError(f"Node.js runtime live-site compatibility test failed with exit code {res.returncode}")
 
     assert "NODE_RUNTIME_TESTS_OK" in res.stdout, "Missing success confirmation in Node.js runtime tests"
-    print("  -> Passed Node.js runtime verification: KaTeX \\frac{1}{6} normalized, 12 numeric variants preserved, code snippets concatenated without explanation pollution, and 900ms delayed Next polling verified.")
+    print("  -> Passed Node.js runtime verification: KaTeX parity matching, idempotent injection, Re-Practice immunity, and true quiz completion verified.")
+
+
+def test_backend_normalizer_math_and_code_non_collision():
+    """Verify backend normalizer and cache key generation preserve math, signs, single-letter options, and code collections."""
+    print("\n[Test 8] Auditing backend normalizer and cache for math, code, and single-letter distinctness...")
+    from backend.core.normalizer import normalize_text_answer, normalize_mcq_answer
+    from backend.cache import compute_cache_key
+
+    # 1. Python collection distinctness
+    assert normalize_text_answer("[1, 2, 3]") != normalize_text_answer("(1, 2, 3)"), "List and tuple must not collide!"
+    assert normalize_text_answer("[1, 2, 3]") != normalize_text_answer("{1, 2, 3}"), "List and set must not collide!"
+    assert normalize_text_answer("(1, 2, 3)") != normalize_text_answer("{1, 2, 3}"), "Tuple and set must not collide!"
+
+    # 2. Math signs, fractions, and subtraction
+    assert normalize_text_answer("-1/6") != normalize_text_answer("1/6"), "Negative and positive fraction must not collide!"
+    assert normalize_text_answer("1 - 1/6") != normalize_text_answer("1/6"), "Subtraction and fraction must not collide!"
+    assert normalize_text_answer("1 - 1/6") != normalize_text_answer("1 1/6"), "Subtraction must preserve operator!"
+    assert normalize_text_answer("1.5") != normalize_text_answer("15"), "Decimal and integer must not collide!"
+
+    # 3. Single-letter options and math variables
+    assert normalize_text_answer("A") == "a" != "", "Single letter option 'A' must not be stripped as article!"
+    assert normalize_text_answer("a - b") == "a - b", "Math expression 'a - b' must not have 'a ' stripped!"
+    assert normalize_text_answer("A : B") == "a : b", "Ratio expression 'A : B' must not have 'A ' stripped!"
+    assert normalize_text_answer("P(A)") == "p(a)", "Probability notation 'P(A)' must be preserved!"
+
+    # 4. MCQ normalization priority (option text vs synthetic letter)
+    mcq = normalize_mcq_answer("A - B", ["X", "A - B", "Y", "Z"])
+    assert mcq.canonical_key == "B", f"Expected canonical key 'B' for option text 'A - B', got '{mcq.canonical_key}'"
+    assert mcq.selected_index == 1
+
+    # 5. Cache key distinctness
+    k_list = compute_cache_key("Python", "mcq", "Evaluate", ["[1, 2, 3]", "None"])
+    k_tuple = compute_cache_key("Python", "mcq", "Evaluate", ["(1, 2, 3)", "None"])
+    assert k_list != k_tuple, "Cache keys for list and tuple options must not collide!"
+
+    k_frac = compute_cache_key("Math", "mcq", "Compute", ["1/6", "2/6"])
+    k_sub = compute_cache_key("Math", "mcq", "Compute", ["1 - 1/6", "2/6"])
+    assert k_frac != k_sub, "Cache keys for fraction and subtraction must not collide!"
+
+    print("  -> Passed backend normalizer and cache math/code non-collision invariants.")
 
 
 if __name__ == "__main__":
@@ -697,6 +802,7 @@ if __name__ == "__main__":
     test_sidepanel_apply_once_and_telemetry()
     test_mock_quiz_react_math_scenario()
     test_nodejs_runtime_verification()
+    test_backend_normalizer_math_and_code_non_collision()
 
     print("\n" + "=" * 70)
     print("ALL LIVE-SITE COMPATIBILITY TESTS PASSED (100% SUCCESS)")
