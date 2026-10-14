@@ -1,15 +1,14 @@
 /**
- * QuizZy - Sleek, Draggable, Shadow-DOM Isolated Floating HUD Bar
+ * QuizZy - Minimalist Draggable Glassmorphic Floating HUD Bar
  * 
- * Injected on-demand into the active quiz tab inside a Shadow Root.
- * Fully isolated from host page CSS, scripts, and quiz extraction logic.
+ * Sleek, Shadow-DOM isolated on-page toolbar (~46px height).
+ * Completely replaces the Chrome Side Panel in user workflows.
  */
 
 (function () {
   "use strict";
 
   if (typeof window === "undefined" || typeof document === "undefined") {
-    // Graceful fallback for non-browser / unit-test environments
     const mockInstance = {
       isMock: true,
       isVisible: () => true,
@@ -24,7 +23,7 @@
     return { success: true, mounted: false, mock: true };
   }
 
-  // Idempotency: If instance already exists, toggle visibility / bring to front
+  // Idempotency: Toggle visibility if instance already exists
   if (window.__QUIZZY_HUD_INSTANCE__) {
     const existing = window.__QUIZZY_HUD_INSTANCE__;
     existing.toggle();
@@ -37,7 +36,6 @@
 
   const HOST_ID = "__quizzy_hud_host__";
 
-  // Check if host element already exists in document
   let host = document.getElementById(HOST_ID);
   if (!host) {
     host = document.createElement("div");
@@ -45,7 +43,6 @@
     host.setAttribute("data-quizzy-ignore", "true");
     host.style.cssText = "all: initial; position: fixed; z-index: 2147483647; top: 0; left: 0; width: 0; height: 0; pointer-events: none; overflow: visible;";
     
-    // Mount to document.documentElement or document.body
     if (document.documentElement) {
       document.documentElement.appendChild(host);
     } else if (document.body) {
@@ -53,19 +50,17 @@
     }
   }
 
-  // Attach Open Shadow Root (or reuse existing if attached)
   let shadow = host.shadowRoot;
   if (!shadow) {
     try {
       shadow = host.attachShadow({ mode: "open" });
-    } catch (e) {
-      // In case host already has a shadow root
+    } catch (_) {
       shadow = host.shadowRoot || host;
     }
   }
 
   // ==========================================================================
-  // HUD Scoped CSS Styles (Dark Mode, Glassmorphic, Modern Typography)
+  // HUD Scoped Minimalist CSS Styles
   // ==========================================================================
   const HUD_STYLES = `
     *, *::before, *::after {
@@ -85,278 +80,266 @@
       pointer-events: auto;
       user-select: none;
       z-index: 2147483647;
-      filter: drop-shadow(0 16px 36px rgba(0, 0, 0, 0.65)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.4));
-      transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1), transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
+      filter: drop-shadow(0 14px 34px rgba(0, 0, 0, 0.45)) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.25));
+      transition: opacity 140ms cubic-bezier(0.16, 1, 0.3, 1), transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     .quizzy-hud-wrapper.hidden {
       display: none !important;
     }
 
-    /* Full Floating Bar Container */
+    /* Minimalist Glassmorphic Bar (~46px compact height) */
     .hud-bar {
-      display: flex;
-      flex-direction: column;
-      min-width: 580px;
-      max-width: 720px;
-      background: rgba(11, 15, 25, 0.94);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 14px;
-      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 8px 30px rgba(0, 0, 0, 0.5);
-      color: #F8FAFC;
-      font-size: 13px;
-      overflow: hidden;
-    }
-
-    /* Top Compact Row (~48px) */
-    .hud-top-row {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 7px 12px;
-      min-height: 48px;
+      height: 46px;
+      min-width: 520px;
+      max-width: 740px;
+      padding: 0 10px 0 12px;
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 14px;
+      color: #F8FAFC;
+      cursor: grab;
+      position: relative;
     }
 
-    /* Drag Handle */
-    .hud-drag-handle {
+    .hud-bar.dragging {
+      cursor: grabbing;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.6);
+      transform: scale(1.01);
+    }
+
+    /* Left Status & Grip Group */
+    .hud-grip-group {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+    }
+
+    .hud-grip-icon {
+      color: #64748B;
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 24px;
-      height: 32px;
-      cursor: grab;
-      color: #64748B;
-      border-radius: 6px;
-      transition: background 150ms, color 150ms;
-      touch-action: none;
-      flex-shrink: 0;
+      transition: color 150ms;
     }
 
-    .hud-drag-handle:hover {
-      background: rgba(255, 255, 255, 0.08);
+    .hud-bar:hover .hud-grip-icon {
       color: #94A3B8;
     }
 
-    .hud-drag-handle:active {
-      cursor: grabbing;
-      color: #38BDF8;
-    }
-
-    .hud-drag-icon {
-      width: 14px;
-      height: 14px;
-      fill: currentColor;
-    }
-
-    /* Brand Logo & Health Dot */
-    .hud-brand {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-weight: 700;
-      font-size: 13.5px;
-      letter-spacing: -0.2px;
-      color: #F8FAFC;
-      flex-shrink: 0;
-    }
-
-    .hud-brand-logo {
-      width: 16px;
-      height: 16px;
-      color: #38BDF8;
-    }
-
     .hud-health-dot {
-      width: 7px;
-      height: 7px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
       background: #EF4444;
-      box-shadow: 0 0 6px #EF4444;
-      transition: background 250ms, box-shadow 250ms;
-      flex-shrink: 0;
+      box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+      transition: background 200ms, box-shadow 200ms;
     }
 
     .hud-health-dot.online {
       background: #10B981;
-      box-shadow: 0 0 6px #10B981;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
     }
 
-    .hud-divider {
-      width: 1px;
-      height: 22px;
-      background: rgba(255, 255, 255, 0.12);
-      flex-shrink: 0;
+    .hud-health-dot.solving {
+      background: #A855F7;
+      animation: hud-pulse 1.2s infinite ease-in-out;
     }
 
-    /* Answer Display Pill */
-    .hud-answer-pill {
+    @keyframes hud-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.7); }
+      70% { box-shadow: 0 0 0 7px rgba(168, 85, 247, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0); }
+    }
+
+    /* Center Answer Zone */
+    .hud-answer-zone {
+      flex: 1;
+      min-width: 0;
       display: flex;
       align-items: center;
       gap: 8px;
-      background: rgba(30, 41, 59, 0.7);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 8px;
-      padding: 5px 10px;
-      flex: 1;
-      min-width: 0;
+      padding: 0 4px;
       overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      cursor: default;
     }
 
-    .hud-pill-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      background: #0284C7;
-      color: #FFFFFF;
+    .hud-badge-option {
       font-weight: 700;
-      font-size: 11px;
-      padding: 2px 6px;
-      border-radius: 5px;
+      font-size: 12px;
+      letter-spacing: 0.5px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: #7C3AED;
+      color: #FFFFFF;
+      flex-shrink: 0;
+      box-shadow: 0 1px 4px rgba(124, 58, 237, 0.4);
+    }
+
+    .hud-badge-option.order {
+      background: #0284C7;
+    }
+
+    .hud-badge-option.text {
+      background: #D97706;
+    }
+
+    .hud-answer-text {
+      font-size: 13px;
+      font-weight: 500;
+      color: #F8FAFC;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .hud-answer-text.ready {
+      color: #94A3B8;
+      font-weight: 400;
+    }
+
+    .hud-answer-text.solving {
+      color: #C084FC;
+      font-weight: 500;
+    }
+
+    .hud-answer-text.complete {
+      color: #34D399;
+      font-weight: 600;
+    }
+
+    .hud-answer-text.uncertain {
+      color: #F87171;
+    }
+
+    .hud-pill-tag {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 4px;
       letter-spacing: 0.3px;
       flex-shrink: 0;
     }
 
-    .hud-pill-badge.uncertain {
-      background: #EF4444;
-    }
-
-    .hud-pill-text {
-      color: #E2E8F0;
-      font-size: 12.5px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      flex: 1;
-    }
-
-    .hud-pill-text.ready {
-      color: #94A3B8;
-      font-style: italic;
-    }
-
-    .hud-pill-text.solving {
-      color: #38BDF8;
-      font-weight: 600;
-      animation: hud-pulse 1.4s infinite ease-in-out;
-    }
-
-    @keyframes hud-pulse {
-      0%, 100% { opacity: 0.6; }
-      50% { opacity: 1; }
-    }
-
-    .hud-meta-badge {
-      display: inline-flex;
-      align-items: center;
-      font-size: 10.5px;
-      font-weight: 600;
-      padding: 2px 5px;
-      border-radius: 4px;
-      flex-shrink: 0;
-    }
-
-    .hud-badge-high {
+    .hud-tag-high {
       background: rgba(16, 185, 129, 0.2);
       color: #34D399;
       border: 1px solid rgba(16, 185, 129, 0.35);
     }
 
-    .hud-badge-med {
+    .hud-tag-med {
       background: rgba(245, 158, 11, 0.2);
       color: #FBBF24;
       border: 1px solid rgba(245, 158, 11, 0.35);
     }
 
-    .hud-badge-cache {
+    .hud-tag-cache {
       background: rgba(6, 182, 212, 0.2);
-      color: #22D3EE;
+      color: #38BDF8;
       border: 1px solid rgba(6, 182, 212, 0.35);
     }
 
-    .hud-badge-latency {
-      color: #64748B;
+    .hud-tag-latency {
+      background: rgba(255, 255, 255, 0.06);
+      color: #94A3B8;
+      border: 1px solid rgba(255, 255, 255, 0.08);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 10px;
     }
 
-    /* Action Buttons */
+    /* Right Action Group */
     .hud-actions {
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
       flex-shrink: 0;
     }
 
     .hud-btn {
       display: inline-flex;
       align-items: center;
-      justify-content: center;
       gap: 5px;
-      padding: 6px 10px;
-      border-radius: 7px;
-      font-size: 12px;
+      height: 32px;
+      padding: 0 11px;
+      border-radius: 8px;
+      font-size: 12.5px;
       font-weight: 600;
       cursor: pointer;
-      border: 1px solid transparent;
-      transition: all 140ms ease;
+      border: none;
       outline: none;
+      transition: all 140ms ease-in-out;
       white-space: nowrap;
-      height: 32px;
     }
 
     .hud-btn:focus-visible {
       box-shadow: 0 0 0 2px #38BDF8;
     }
 
-    .hud-btn:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-
     .hud-btn-primary {
-      background: #0284C7;
+      background: #7C3AED;
       color: #FFFFFF;
-      border-color: rgba(255, 255, 255, 0.15);
+      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
     }
 
     .hud-btn-primary:hover:not(:disabled) {
-      background: #0369A1;
+      background: #6D28D9;
       transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(124, 58, 237, 0.45);
+    }
+
+    .hud-btn-primary:active:not(:disabled) {
+      background: #5B21B6;
+      transform: translateY(0);
     }
 
     .hud-btn-secondary {
       background: rgba(255, 255, 255, 0.08);
-      color: #F1F5F9;
-      border-color: rgba(255, 255, 255, 0.12);
+      color: #E2E8F0;
+      border: 1px solid rgba(255, 255, 255, 0.12);
     }
 
     .hud-btn-secondary:hover:not(:disabled) {
       background: rgba(255, 255, 255, 0.14);
       color: #FFFFFF;
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .hud-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
     }
 
     .hud-btn-auto {
       background: rgba(16, 185, 129, 0.15);
       color: #34D399;
-      border-color: rgba(16, 185, 129, 0.35);
+      border: 1px solid rgba(16, 185, 129, 0.3);
     }
 
     .hud-btn-auto:hover:not(:disabled) {
       background: rgba(16, 185, 129, 0.25);
+      color: #6EE7B7;
     }
 
     .hud-btn-auto.running {
-      background: rgba(239, 68, 68, 0.2);
-      color: #F87171;
-      border-color: rgba(239, 68, 68, 0.45);
-      animation: hud-auto-pulse 1.2s infinite alternate;
+      background: #EF4444 !important;
+      color: #FFFFFF !important;
+      border: none !important;
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.5) !important;
+      animation: hud-auto-pulse 1s infinite alternate;
     }
 
     @keyframes hud-auto-pulse {
-      from { border-color: rgba(239, 68, 68, 0.4); }
-      to { border-color: rgba(239, 68, 68, 0.9); }
+      0% { opacity: 0.9; }
+      100% { opacity: 1; }
     }
 
     .hud-icon-btn {
@@ -367,15 +350,14 @@
       height: 28px;
       border-radius: 6px;
       background: transparent;
-      border: 1px solid transparent;
+      border: none;
       color: #94A3B8;
       cursor: pointer;
       transition: background 140ms, color 140ms;
-      outline: none;
     }
 
     .hud-icon-btn:hover {
-      background: rgba(255, 255, 255, 0.09);
+      background: rgba(255, 255, 255, 0.1);
       color: #F8FAFC;
     }
 
@@ -383,119 +365,116 @@
       box-shadow: 0 0 0 2px #38BDF8;
     }
 
-    /* Expandable Drawer */
-    .hud-drawer {
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
-      padding: 12px 14px;
-      background: rgba(15, 23, 42, 0.96);
+    /* More Popover Drawer */
+    .hud-popover {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      max-height: 280px;
-      overflow-y: auto;
+      gap: 8px;
+      background: rgba(15, 23, 42, 0.96);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 12px;
+      padding: 11px 14px;
+      margin-top: 6px;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+      animation: hud-fade-in 140ms ease-out;
     }
 
-    .hud-drawer.hidden {
+    @keyframes hud-fade-in {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .hud-popover.hidden {
       display: none !important;
     }
 
-    .hud-drawer-section {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .hud-drawer-label {
-      font-size: 11px;
-      font-weight: 700;
-      color: #64748B;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .hud-drawer-question {
-      font-size: 12px;
-      color: #CBD5E1;
-      line-height: 1.45;
-      background: rgba(0, 0, 0, 0.25);
-      padding: 6px 9px;
-      border-radius: 6px;
-      border: 1px solid rgba(255, 255, 255, 0.06);
-    }
-
-    .hud-drawer-reason {
-      font-size: 12px;
-      color: #94A3B8;
-      line-height: 1.45;
-      font-style: italic;
-    }
-
-    .hud-drawer-footer {
+    .hud-popover-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
-      padding-top: 4px;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 12px;
+    }
+
+    .hud-reason-text {
+      font-size: 12px;
+      color: #CBD5E1;
+      line-height: 1.4;
+      max-height: 48px;
+      overflow-y: auto;
+    }
+
+    .hud-checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 11.5px;
+      color: #94A3B8;
+      cursor: pointer;
+    }
+
+    .hud-checkbox-label input {
+      accent-color: #7C3AED;
+      cursor: pointer;
     }
 
     .hud-btn-flag {
-      background: rgba(239, 68, 68, 0.12);
-      color: #FCA5A5;
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      padding: 4px 8px;
-      font-size: 11px;
-      border-radius: 6px;
-      cursor: pointer;
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
+      height: 26px;
+      padding: 0 9px;
+      border-radius: 6px;
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #F87171;
+      font-size: 11.5px;
       font-weight: 600;
-      transition: all 140ms;
+      cursor: pointer;
+      transition: background 140ms;
+      flex-shrink: 0;
     }
 
     .hud-btn-flag:hover {
-      background: rgba(239, 68, 68, 0.24);
-      color: #FFFFFF;
+      background: rgba(239, 68, 68, 0.22);
     }
 
     .hud-btn-flag.flagged {
       background: rgba(16, 185, 129, 0.2);
-      color: #34D399;
       border-color: rgba(16, 185, 129, 0.4);
-      cursor: default;
+      color: #34D399;
     }
 
-    /* Minimized Floating Pill */
+    /* Minimized 36x36px Floating Circle Pill */
     .hud-minimized-pill {
       display: flex;
       align-items: center;
-      gap: 7px;
-      padding: 6px 12px;
-      background: rgba(11, 15, 25, 0.94);
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       border: 1px solid rgba(255, 255, 255, 0.18);
-      border-radius: 999px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-      color: #F8FAFC;
-      font-size: 12.5px;
-      font-weight: 700;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
       cursor: pointer;
-      transition: transform 140ms ease, background 140ms ease;
+      position: relative;
+      transition: transform 140ms, box-shadow 140ms;
     }
 
     .hud-minimized-pill:hover {
-      transform: scale(1.04);
-      background: rgba(15, 23, 42, 0.98);
-      border-color: #38BDF8;
+      transform: scale(1.08);
+      box-shadow: 0 10px 28px rgba(124, 58, 237, 0.35);
     }
 
-    .hud-minimized-pill.hidden {
-      display: none !important;
+    .hud-minimized-pill .hud-health-dot {
+      position: absolute;
+      top: 2px;
+      right: 2px;
     }
 
-    /* SVG icon utility */
     .hud-svg {
       width: 14px;
       height: 14px;
@@ -505,131 +484,117 @@
       stroke-linecap: round;
       stroke-linejoin: round;
     }
+
+    .hidden {
+      display: none !important;
+    }
   `;
 
-  // Insert styles into shadow DOM
   const styleEl = document.createElement("style");
   styleEl.textContent = HUD_STYLES;
   shadow.appendChild(styleEl);
 
   // ==========================================================================
-  // HUD HTML Markup
+  // HUD HTML Layout
   // ==========================================================================
   const wrapper = document.createElement("div");
   wrapper.className = "quizzy-hud-wrapper";
   wrapper.innerHTML = `
-    <!-- Minimized Floating Pill Mode -->
-    <div class="hud-minimized-pill hidden" id="hud-minimized-pill" title="Click to expand QuizZy HUD">
-      <span class="hud-health-dot" id="hud-min-health-dot"></span>
-      <svg class="hud-svg" viewBox="0 0 24 24" style="color: #38BDF8;">
+    <!-- Minimized Circle Pill (36x36px) -->
+    <div class="hud-minimized-pill hidden" id="hud-min-pill" title="Expand QuizZy Floating Bar">
+      <span class="hud-health-dot" id="hud-min-dot"></span>
+      <svg class="hud-svg" viewBox="0 0 24 24" style="color: #A855F7;">
         <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"></polygon>
       </svg>
-      <span>QuizZy</span>
-      <span style="font-size: 11px; opacity: 0.6;">↗</span>
     </div>
 
-    <!-- Full Floating Bar -->
-    <div class="hud-bar" id="hud-full-bar">
-      <!-- Top Compact Row (~48px) -->
-      <div class="hud-top-row">
-        <!-- Drag Handle -->
-        <div class="hud-drag-handle" id="hud-drag-handle" title="Drag to move bar">
-          <svg class="hud-drag-icon" viewBox="0 0 24 24">
-            <circle cx="9" cy="5" r="1.5"></circle>
-            <circle cx="9" cy="12" r="1.5"></circle>
-            <circle cx="9" cy="19" r="1.5"></circle>
-            <circle cx="15" cy="5" r="1.5"></circle>
-            <circle cx="15" cy="12" r="1.5"></circle>
-            <circle cx="15" cy="19" r="1.5"></circle>
+    <!-- Main Sleek Bar -->
+    <div class="hud-bar" id="hud-bar" title="Drag to move bar">
+      <!-- Left Grip & Status -->
+      <div class="hud-grip-group">
+        <div class="hud-grip-icon" title="Drag to move">
+          <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+            <circle cx="2" cy="2" r="1.5"></circle>
+            <circle cx="2" cy="8" r="1.5"></circle>
+            <circle cx="2" cy="14" r="1.5"></circle>
+            <circle cx="8" cy="2" r="1.5"></circle>
+            <circle cx="8" cy="8" r="1.5"></circle>
+            <circle cx="8" cy="14" r="1.5"></circle>
           </svg>
         </div>
-
-        <!-- Brand & Health Dot -->
-        <div class="hud-brand" title="QuizZy HUD Bar">
-          <svg class="hud-brand-logo" viewBox="0 0 24 24">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"></polygon>
-          </svg>
-          <span>QuizZy</span>
-          <span class="hud-health-dot" id="hud-health-dot" title="Backend: Offline"></span>
-        </div>
-
-        <div class="hud-divider"></div>
-
-        <!-- Answer Display Pill -->
-        <div class="hud-answer-pill" id="hud-answer-pill">
-          <span class="hud-pill-badge" id="hud-pill-badge">[Ready]</span>
-          <span class="hud-pill-text ready" id="hud-pill-text">Press Solve (Alt+S)</span>
-          <span class="hud-meta-badge hud-badge-high hidden" id="hud-badge-confidence">HIGH</span>
-          <span class="hud-meta-badge hud-badge-cache hidden" id="hud-badge-cache">CACHE</span>
-          <span class="hud-meta-badge hud-badge-latency hidden" id="hud-badge-latency">0ms</span>
-        </div>
-
-        <!-- Action Buttons -->
-        <div class="hud-actions">
-          <button class="hud-btn hud-btn-primary" id="hud-btn-solve" title="Extract current question and solve (Alt+S)">
-            <svg class="hud-svg" viewBox="0 0 24 24">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"></polygon>
-            </svg>
-            <span>Solve</span>
-          </button>
-
-          <button class="hud-btn hud-btn-secondary" id="hud-btn-apply" title="Apply winning answer to page (Alt+A)" disabled>
-            <svg class="hud-svg" viewBox="0 0 24 24">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-            <span>Apply</span>
-          </button>
-
-          <button class="hud-btn hud-btn-auto" id="hud-btn-auto" title="Run guarded Auto Mode (Halt with Escape)">
-            <svg class="hud-svg" id="hud-auto-icon" viewBox="0 0 24 24">
-              <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"></polygon>
-            </svg>
-            <span id="hud-auto-label">Auto</span>
-          </button>
-
-          <button class="hud-icon-btn" id="hud-btn-info" title="Toggle Answer Reasoning Drawer">
-            <svg class="hud-svg" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="16" x2="12" y2="12"></line>
-              <line x1="12" y1="8" x2="12.01" y2="8"></line>
-            </svg>
-          </button>
-
-          <button class="hud-icon-btn" id="hud-btn-minimize" title="Minimize bar into floating pill">
-            <svg class="hud-svg" viewBox="0 0 24 24">
-              <line x1="5" y1="12" x2="19" y2="12"></line>
-            </svg>
-          </button>
-
-          <button class="hud-icon-btn" id="hud-btn-close" title="Close Floating HUD">
-            <svg class="hud-svg" viewBox="0 0 24 24">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
-        </div>
+        <span class="hud-health-dot" id="hud-health-dot" title="Backend: Offline"></span>
       </div>
 
-      <!-- Expandable Drawer below bar -->
-      <div class="hud-drawer hidden" id="hud-drawer">
-        <div class="hud-drawer-section">
-          <span class="hud-drawer-label">Question Stem</span>
-          <div class="hud-drawer-question" id="hud-drawer-question">No question extracted yet.</div>
-        </div>
+      <!-- Center Answer Zone -->
+      <div class="hud-answer-zone" id="hud-answer-zone">
+        <span class="hud-badge-option hidden" id="hud-badge-opt">[A]</span>
+        <span class="hud-answer-text ready" id="hud-answer-text">Ready — Click Solve (Alt+S)</span>
+        <span class="hud-pill-tag hud-tag-high hidden" id="hud-tag-conf">HIGH</span>
+        <span class="hud-pill-tag hud-tag-cache hidden" id="hud-tag-cache">CACHE</span>
+        <span class="hud-pill-tag hud-tag-latency hidden" id="hud-tag-latency">0ms</span>
+      </div>
 
-        <div class="hud-drawer-section">
-          <span class="hud-drawer-label">Reasoning & Verification</span>
-          <div class="hud-drawer-reason" id="hud-drawer-reason">Awaiting solution...</div>
-        </div>
+      <!-- Right Action Group -->
+      <div class="hud-actions">
+        <!-- Solve (Primary) -->
+        <button class="hud-btn hud-btn-primary" id="hud-btn-solve" title="Extract & Solve Question (Alt+S)">
+          <svg class="hud-svg" viewBox="0 0 24 24">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"></polygon>
+          </svg>
+          <span>Solve</span>
+        </button>
 
-        <div class="hud-drawer-footer">
-          <div style="font-size: 11px; color: #64748B;" id="hud-drawer-status">
-            Model: Consensus Dual-Model
-          </div>
-          <button class="hud-btn-flag" id="hud-btn-flag" title="Flag answer as incorrect and evict from cache">
-            <span>🚩 Flag Wrong</span>
-          </button>
-        </div>
+        <!-- Apply (Secondary) -->
+        <button class="hud-btn hud-btn-secondary" id="hud-btn-apply" title="Apply Winning Answer Once (Alt+A)" disabled>
+          <svg class="hud-svg" viewBox="0 0 24 24">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+          <span>Apply</span>
+        </button>
+
+        <!-- Auto Mode (Toggle) -->
+        <button class="hud-btn hud-btn-auto" id="hud-btn-auto" title="Run guarded Auto Mode (Halt with Escape)">
+          <svg class="hud-svg" id="hud-auto-icon" viewBox="0 0 24 24">
+            <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"></polygon>
+          </svg>
+          <span id="hud-auto-label">Auto</span>
+        </button>
+
+        <!-- More Drawer Toggle (⋯) -->
+        <button class="hud-icon-btn" id="hud-btn-more" title="More Options & Reasoning">
+          <svg class="hud-svg" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="1.5" fill="currentColor"></circle>
+            <circle cx="19" cy="12" r="1.5" fill="currentColor"></circle>
+            <circle cx="5" cy="12" r="1.5" fill="currentColor"></circle>
+          </svg>
+        </button>
+
+        <!-- Minimize (—) -->
+        <button class="hud-icon-btn" id="hud-btn-min" title="Minimize to Pill">
+          <svg class="hud-svg" viewBox="0 0 24 24">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- More Popover Drawer (Reasoning, Flag Wrong, Strict Toggle) -->
+    <div class="hud-popover hidden" id="hud-popover">
+      <div class="hud-popover-row">
+        <div class="hud-reason-text" id="hud-reason-text">No reasoning available yet. Click Solve to get explanations.</div>
+        <button class="hud-btn-flag" id="hud-btn-flag" title="Flag as wrong and evict from cache">
+          <svg class="hud-svg" viewBox="0 0 24 24" style="width: 12px; height: 12px;">
+            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
+            <line x1="4" y1="22" x2="4" y2="15"></line>
+          </svg>
+          <span>Flag Wrong</span>
+        </button>
+      </div>
+      <div class="hud-popover-row" style="border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 8px;">
+        <label class="hud-checkbox-label">
+          <input type="checkbox" id="hud-chk-strict">
+          <span>Allow Strict HIGH Agreement Only</span>
+        </label>
       </div>
     </div>
   `;
@@ -637,231 +602,234 @@
   shadow.appendChild(wrapper);
 
   // ==========================================================================
-  // References to Internal Shadow DOM Elements
+  // DOM References
   // ==========================================================================
-  const fullBar = wrapper.querySelector("#hud-full-bar");
-  const minimizedPill = wrapper.querySelector("#hud-minimized-pill");
-  const dragHandle = wrapper.querySelector("#hud-drag-handle");
-  const healthDot = wrapper.querySelector("#hud-health-dot");
-  const minHealthDot = wrapper.querySelector("#hud-min-health-dot");
-  const pillBadge = wrapper.querySelector("#hud-pill-badge");
-  const pillText = wrapper.querySelector("#hud-pill-text");
-  const badgeConfidence = wrapper.querySelector("#hud-badge-confidence");
-  const badgeCache = wrapper.querySelector("#hud-badge-cache");
-  const badgeLatency = wrapper.querySelector("#hud-badge-latency");
-  const btnSolve = wrapper.querySelector("#hud-btn-solve");
-  const btnApply = wrapper.querySelector("#hud-btn-apply");
-  const btnAuto = wrapper.querySelector("#hud-btn-auto");
-  const autoLabel = wrapper.querySelector("#hud-auto-label");
-  const autoIcon = wrapper.querySelector("#hud-auto-icon");
-  const btnInfo = wrapper.querySelector("#hud-btn-info");
-  const btnMinimize = wrapper.querySelector("#hud-btn-minimize");
-  const btnClose = wrapper.querySelector("#hud-btn-close");
-  const drawer = wrapper.querySelector("#hud-drawer");
-  const drawerQuestion = wrapper.querySelector("#hud-drawer-question");
-  const drawerReason = wrapper.querySelector("#hud-drawer-reason");
-  const drawerStatus = wrapper.querySelector("#hud-drawer-status");
-  const btnFlag = wrapper.querySelector("#hud-btn-flag");
+  const getShadowEl = (id) => (shadow.getElementById ? shadow.getElementById(id) : shadow.querySelector("#" + id));
+  const fullBar = getShadowEl("hud-bar");
+  const minPill = getShadowEl("hud-min-pill");
+  const healthDot = getShadowEl("hud-health-dot");
+  const minDot = getShadowEl("hud-min-dot");
+  const badgeOpt = getShadowEl("hud-badge-opt");
+  const answerText = getShadowEl("hud-answer-text");
+  const tagConf = getShadowEl("hud-tag-conf");
+  const tagCache = getShadowEl("hud-tag-cache");
+  const tagLatency = getShadowEl("hud-tag-latency");
+  const btnSolve = getShadowEl("hud-btn-solve");
+  const btnApply = getShadowEl("hud-btn-apply");
+  const btnAuto = getShadowEl("hud-btn-auto");
+  const autoIcon = getShadowEl("hud-auto-icon");
+  const autoLabel = getShadowEl("hud-auto-label");
+  const btnMore = getShadowEl("hud-btn-more");
+  const btnMin = getShadowEl("hud-btn-min");
+  const popover = getShadowEl("hud-popover");
+  const reasonText = getShadowEl("hud-reason-text");
+  const btnFlag = getShadowEl("hud-btn-flag");
+  const chkStrict = getShadowEl("hud-chk-strict");
 
   // ==========================================================================
-  // HUD State Management
+  // Internal State
   // ==========================================================================
   let isVisibleState = true;
   let isMinimizedState = false;
-  let isDrawerOpen = false;
-  let isAutoRunning = false;
   let isSolving = false;
-  let latestExtracted = null;
+  let isAutoRunning = false;
+  let autoStepCount = 0;
   let latestSolution = null;
+  let latestExtracted = null;
 
-  // Storage helper for Chrome extension vs mock
-  const storage = (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) ? chrome.storage.local : {
-    get: (keys, cb) => {
-      try {
-        const res = {};
-        const arr = Array.isArray(keys) ? keys : [keys];
-        for (const k of arr) {
-          const val = localStorage.getItem(k);
-          if (val) res[k] = JSON.parse(val);
-        }
-        cb(res);
-      } catch (_) { cb({}); }
-    },
-    set: (items, cb) => {
-      try {
-        for (const [k, v] of Object.entries(items)) {
-          localStorage.setItem(k, JSON.stringify(v));
-        }
-      } catch (_) {}
-      if (cb) cb();
-    }
-  };
+  const storage = (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local)
+    ? chrome.storage.local
+    : {
+        get: (keys, cb) => { if (cb) cb({}); },
+        set: (data, cb) => { if (cb) cb(); }
+      };
 
-  // Safe messaging to extension background
-  function sendExtensionMessage(msg, callback) {
-    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage(msg, (res) => {
-        if (chrome.runtime.lastError) {
-          if (callback) callback({ success: false, error: chrome.runtime.lastError.message });
-          return;
-        }
-        if (callback) callback(res || { success: true });
-      });
-    } else {
-      if (callback) callback({ success: false, error: "chrome.runtime unavailable" });
-    }
-  }
-
-  // ==========================================================================
-  // Draggable Position & Clamping
-  // ==========================================================================
-  function clampPosition(left, top) {
-    const rect = wrapper.getBoundingClientRect();
-    const w = rect.width || 600;
-    const h = rect.height || 48;
-    const maxLeft = Math.max(0, window.innerWidth - w - 8);
-    const maxTop = Math.max(0, window.innerHeight - h - 8);
-    return {
-      left: Math.max(8, Math.min(left, maxLeft)),
-      top: Math.max(8, Math.min(top, maxTop))
-    };
-  }
-
-  function setHudPosition(left, top) {
-    const pos = clampPosition(left, top);
-    wrapper.style.left = `${pos.left}px`;
-    wrapper.style.top = `${pos.top}px`;
-    wrapper.style.right = "auto";
-    wrapper.style.bottom = "auto";
-  }
-
-  // Restore saved position or default to bottom-right
-  storage.get(["quizzy_hud_pos", "quizzy_hud_minimized"], (res) => {
-    if (res && res.quizzy_hud_minimized) {
-      setMinimized(true);
-    }
-    if (res && res.quizzy_hud_pos && typeof res.quizzy_hud_pos.left === "number" && typeof res.quizzy_hud_pos.top === "number") {
-      setHudPosition(res.quizzy_hud_pos.left, res.quizzy_hud_pos.top);
-    } else {
-      // Default: bottom-right with 24px margins
-      const defaultLeft = Math.max(16, window.innerWidth - 640 - 24);
-      const defaultTop = Math.max(16, window.innerHeight - 60 - 24);
-      setHudPosition(defaultLeft, defaultTop);
+  // Restore strict agreement preference
+  storage.get(["quizzy_strict_agreement"], (res) => {
+    if (chkStrict && res.quizzy_strict_agreement !== undefined) {
+      chkStrict.checked = Boolean(res.quizzy_strict_agreement);
     }
   });
 
-  // Dragging event listeners on header / drag-handle
+  if (chkStrict) {
+    chkStrict.addEventListener("change", () => {
+      storage.set({ quizzy_strict_agreement: chkStrict.checked });
+    });
+  }
+
+  // Restore position or set default (bottom-right: 24px)
+  function applyPosition(pos) {
+    const margin = 16;
+    let x = (pos && typeof pos.left === "number") ? pos.left : (window.innerWidth - 640);
+    let y = (pos && typeof pos.top === "number") ? pos.top : (window.innerHeight - 80);
+
+    const maxX = Math.max(0, window.innerWidth - (isMinimizedState ? 44 : 540));
+    const maxY = Math.max(0, window.innerHeight - (isMinimizedState ? 44 : 60));
+
+    x = Math.max(margin, Math.min(x, maxX));
+    y = Math.max(margin, Math.min(y, maxY));
+
+    wrapper.style.left = `${x}px`;
+    wrapper.style.top = `${y}px`;
+  }
+
+  storage.get(["quizzy_hud_pos", "quizzy_hud_minimized"], (res) => {
+    if (res.quizzy_hud_minimized) {
+      setMinimized(true);
+    }
+    applyPosition(res.quizzy_hud_pos);
+  });
+
+  // ==========================================================================
+  // Dragging Implementation (Anywhere on Bar, Except Interactive Elements)
+  // ==========================================================================
   let isDragging = false;
   let dragStartX = 0;
   let dragStartY = 0;
-  let initialLeft = 0;
-  let initialTop = 0;
+  let barStartLeft = 0;
+  let barStartTop = 0;
 
   function onDragStart(e) {
-    // Only accept left mouse button or touch
-    if (e.type === "mousedown" && e.button !== 0) return;
-    
+    // Ignore drag on buttons, inputs, labels, and popover content
+    const target = e.target;
+    if (target && target.closest && target.closest("button, input, label, a, .hud-btn-flag, .hud-popover")) {
+      return;
+    }
+
     isDragging = true;
-    const clientX = e.type.startsWith("touch") ? e.touches[0].clientX : e.clientX;
-    const clientY = e.type.startsWith("touch") ? e.touches[0].clientY : e.clientY;
+    fullBar.classList.add("dragging");
+
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
     dragStartX = clientX;
     dragStartY = clientY;
 
     const rect = wrapper.getBoundingClientRect();
-    initialLeft = rect.left;
-    initialTop = rect.top;
+    barStartLeft = rect.left;
+    barStartTop = rect.top;
 
-    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-      window.addEventListener("mousemove", onDragMove, { passive: false });
-      window.addEventListener("mouseup", onDragEnd);
-      window.addEventListener("touchmove", onDragMove, { passive: false });
-      window.addEventListener("touchend", onDragEnd);
-    }
-    e.preventDefault();
+    window.addEventListener("mousemove", onDragMove, { passive: true });
+    window.addEventListener("mouseup", onDragEnd);
+    window.addEventListener("touchmove", onDragMove, { passive: true });
+    window.addEventListener("touchend", onDragEnd);
   }
 
   function onDragMove(e) {
     if (!isDragging) return;
-    const clientX = e.type.startsWith("touch") ? e.touches[0].clientX : e.clientX;
-    const clientY = e.type.startsWith("touch") ? e.touches[0].clientY : e.clientY;
-    const deltaX = clientX - dragStartX;
-    const deltaY = clientY - dragStartY;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const dx = clientX - dragStartX;
+    const dy = clientY - dragStartY;
 
-    setHudPosition(initialLeft + deltaX, initialTop + deltaY);
-    e.preventDefault();
+    let newLeft = barStartLeft + dx;
+    let newTop = barStartTop + dy;
+
+    const w = wrapper.offsetWidth || 520;
+    const h = wrapper.offsetHeight || 46;
+    newLeft = Math.max(8, Math.min(newLeft, window.innerWidth - w - 8));
+    newTop = Math.max(8, Math.min(newTop, window.innerHeight - h - 8));
+
+    wrapper.style.left = `${newLeft}px`;
+    wrapper.style.top = `${newTop}px`;
   }
 
   function onDragEnd() {
     if (!isDragging) return;
     isDragging = false;
-    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
-      window.removeEventListener("mousemove", onDragMove);
-      window.removeEventListener("mouseup", onDragEnd);
-      window.removeEventListener("touchmove", onDragMove);
-      window.removeEventListener("touchend", onDragEnd);
-    }
+    fullBar.classList.remove("dragging");
+
+    window.removeEventListener("mousemove", onDragMove);
+    window.removeEventListener("mouseup", onDragEnd);
+    window.removeEventListener("touchmove", onDragMove);
+    window.removeEventListener("touchend", onDragEnd);
 
     const rect = wrapper.getBoundingClientRect();
     storage.set({ quizzy_hud_pos: { left: rect.left, top: rect.top } });
   }
 
-  if (dragHandle) {
-    dragHandle.addEventListener("mousedown", onDragStart);
-    dragHandle.addEventListener("touchstart", onDragStart, { passive: false });
+  if (fullBar) {
+    fullBar.addEventListener("mousedown", onDragStart);
+    fullBar.addEventListener("touchstart", onDragStart, { passive: false });
   }
-  if (minimizedPill) {
-    minimizedPill.addEventListener("mousedown", onDragStart);
-    minimizedPill.addEventListener("touchstart", onDragStart, { passive: false });
+  if (minPill) {
+    minPill.addEventListener("mousedown", onDragStart);
+    minPill.addEventListener("touchstart", onDragStart, { passive: false });
   }
 
   // ==========================================================================
-  // Health Check Poller
+  // Communication Helpers
   // ==========================================================================
-  function updateBackendHealth() {
+  function sendExtensionMessage(message, callback) {
+    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+      try {
+        chrome.runtime.sendMessage(message, (res) => {
+          if (chrome.runtime.lastError) {
+            if (callback) callback({ success: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          if (callback) callback(res || { success: false });
+        });
+        return;
+      } catch (err) {
+        if (callback) callback({ success: false, error: err.message });
+        return;
+      }
+    }
+    if (callback) callback({ success: false, error: "chrome.runtime unavailable" });
+  }
+
+  // ==========================================================================
+  // Health Polling (Backend Status)
+  // ==========================================================================
+  function checkHealth() {
     sendExtensionMessage({ action: "CHECK_HEALTH" }, (res) => {
       const isOnline = res && res.success && res.data;
       if (isOnline) {
-        if (healthDot) {
+        if (healthDot && !isSolving) {
           healthDot.className = "hud-health-dot online";
           healthDot.title = `Backend Connected (Cache: ${res.data.cache_entries || 0})`;
         }
-        if (minHealthDot) {
-          minHealthDot.className = "hud-health-dot online";
-        }
+        if (minDot) minDot.className = "hud-health-dot online";
       } else {
-        if (healthDot) {
+        if (healthDot && !isSolving) {
           healthDot.className = "hud-health-dot";
-          healthDot.title = "Backend Offline (Run uvicorn backend.app:app)";
+          healthDot.title = "Backend Offline";
         }
-        if (minHealthDot) {
-          minHealthDot.className = "hud-health-dot";
-        }
+        if (minDot) minDot.className = "hud-health-dot";
       }
     });
   }
 
-  updateBackendHealth();
-  const healthInterval = setInterval(updateBackendHealth, 7000);
+  checkHealth();
+  const healthInterval = setInterval(checkHealth, 7000);
   if (healthInterval && typeof healthInterval.unref === "function") {
     healthInterval.unref();
   }
 
   // ==========================================================================
-  // Display Helpers
+  // Question Signature for Stuck-Detection
+  // ==========================================================================
+  function getQuestionSig(ext) {
+    if (!ext) return "";
+    const q = (ext.question || "").trim();
+    const opts = Array.isArray(ext.options) ? ext.options.join("|") : "";
+    return `${q}::${opts}`;
+  }
+
+  // ==========================================================================
+  // Display & State Renderers
   // ==========================================================================
   function setSolvingState() {
     isSolving = true;
-    if (pillBadge) {
-      pillBadge.className = "hud-pill-badge";
-      pillBadge.textContent = "Solving";
+    if (healthDot) healthDot.className = "hud-health-dot solving";
+    if (badgeOpt) badgeOpt.classList.add("hidden");
+    if (answerText) {
+      answerText.className = "hud-answer-text solving";
+      answerText.textContent = "Solving question with dual models...";
     }
-    if (pillText) {
-      pillText.className = "hud-pill-text solving";
-      pillText.textContent = "Analyzing question & querying dual models...";
-    }
-    if (badgeConfidence) badgeConfidence.classList.add("hidden");
-    if (badgeCache) badgeCache.classList.add("hidden");
-    if (badgeLatency) badgeLatency.classList.add("hidden");
+    if (tagConf) tagConf.classList.add("hidden");
+    if (tagCache) tagCache.classList.add("hidden");
+    if (tagLatency) tagLatency.classList.add("hidden");
     if (btnApply) btnApply.disabled = true;
   }
 
@@ -869,198 +837,175 @@
     isSolving = false;
     latestSolution = solution;
     latestExtracted = extracted;
+    checkHealth();
 
     if (!solution || solution.status !== "ok") {
-      if (pillBadge) {
-        pillBadge.className = "hud-pill-badge uncertain";
-        pillBadge.textContent = "Uncertain";
+      if (badgeOpt) badgeOpt.classList.add("hidden");
+      if (answerText) {
+        answerText.className = "hud-answer-text uncertain";
+        answerText.textContent = solution && solution.reason ? solution.reason : "Model consensus uncertain";
       }
-      if (pillText) {
-        pillText.className = "hud-pill-text";
-        pillText.textContent = solution && solution.reason ? solution.reason : "Model consensus uncertain";
-      }
-      if (badgeConfidence) badgeConfidence.classList.add("hidden");
-      if (badgeCache) badgeCache.classList.add("hidden");
-      if (badgeLatency) badgeLatency.classList.add("hidden");
+      if (tagConf) tagConf.classList.add("hidden");
+      if (tagCache) tagCache.classList.add("hidden");
+      if (tagLatency) tagLatency.classList.add("hidden");
       if (btnApply) btnApply.disabled = true;
-      if (drawerQuestion) drawerQuestion.textContent = extracted ? extracted.question : "N/A";
-      if (drawerReason) drawerReason.textContent = solution ? (solution.reason || "Uncertain consensus") : "No solution returned";
+      if (reasonText) reasonText.textContent = solution && solution.reason ? solution.reason : "Uncertain consensus";
       return;
     }
 
-    // Set Option Badge & Winner Text
-    let badgeLabel = "[A]";
+    // Set Option Badge
+    let optBadge = "[A]";
     let winText = "";
 
     if (solution.q_type === "mcq") {
-      badgeLabel = `[${solution.answer || "A"}]`;
-      winText = solution.selected_text || (extracted?.options?.[solution.selected_index]) || "Option";
+      optBadge = `[${solution.answer || "A"}]`;
+      winText = solution.selected_text || (extracted && extracted.options && extracted.options[solution.selected_index]) || "Option";
+      if (badgeOpt) badgeOpt.className = "hud-badge-option";
     } else if (solution.q_type === "order") {
-      badgeLabel = "[Order]";
+      optBadge = "[Order]";
       winText = Array.isArray(solution.ordered_texts) ? solution.ordered_texts.join(" ➔ ") : (solution.answer || "Sequence");
+      if (badgeOpt) badgeOpt.className = "hud-badge-option order";
     } else if (solution.q_type === "text") {
-      badgeLabel = "[Text]";
+      optBadge = "[Text]";
       winText = solution.answer || "Answer";
+      if (badgeOpt) badgeOpt.className = "hud-badge-option text";
     }
 
-    if (pillBadge) {
-      pillBadge.className = "hud-pill-badge";
-      pillBadge.textContent = badgeLabel;
+    if (badgeOpt) {
+      badgeOpt.textContent = optBadge;
+      badgeOpt.classList.remove("hidden");
     }
-    if (pillText) {
-      pillText.className = "hud-pill-text";
-      pillText.textContent = winText;
-      pillText.title = winText;
+
+    if (answerText) {
+      answerText.className = "hud-answer-text";
+      answerText.textContent = winText;
+      answerText.title = winText;
     }
 
     // Confidence badge
-    if (badgeConfidence) {
-      const conf = (solution.confidence_label || "high").toLowerCase();
-      badgeConfidence.classList.remove("hidden", "hud-badge-high", "hud-badge-med");
-      if (conf === "high") {
-        badgeConfidence.classList.add("hud-badge-high");
-        badgeConfidence.textContent = "HIGH";
-      } else {
-        badgeConfidence.classList.add("hud-badge-med");
-        badgeConfidence.textContent = "MED";
-      }
+    if (tagConf) {
+      const conf = (solution.confidence_label || "high").toUpperCase();
+      tagConf.textContent = conf;
+      tagConf.className = `hud-pill-tag ${conf === "HIGH" ? "hud-tag-high" : "hud-tag-med"}`;
+      tagConf.classList.remove("hidden");
     }
 
     // Cache badge
-    if (badgeCache) {
+    if (tagCache) {
       if (solution.cache_hit) {
-        badgeCache.classList.remove("hidden");
+        tagCache.classList.remove("hidden");
       } else {
-        badgeCache.classList.add("hidden");
+        tagCache.classList.add("hidden");
       }
     }
 
     // Latency badge
-    if (badgeLatency) {
-      badgeLatency.classList.remove("hidden");
-      badgeLatency.textContent = `${Math.round(solution.latency_ms || 0)}ms`;
+    if (tagLatency) {
+      if (solution.latency_ms) {
+        tagLatency.textContent = `${Math.round(solution.latency_ms)}ms`;
+        tagLatency.classList.remove("hidden");
+      } else {
+        tagLatency.classList.add("hidden");
+      }
+    }
+
+    // Reasoning popover
+    if (reasonText) {
+      reasonText.textContent = solution.reason || "High confidence consensus reached.";
     }
 
     // Enable Apply button
-    if (btnApply) {
-      btnApply.disabled = false;
-    }
-
-    // Populate drawer content
-    if (drawerQuestion && extracted) {
-      drawerQuestion.textContent = extracted.question || "N/A";
-    }
-    if (drawerReason) {
-      drawerReason.textContent = solution.reason || "Model consensus agreement verified.";
-    }
-    if (drawerStatus) {
-      const src = solution.sources_used && solution.sources_used.length > 0 ? `Web Verified (${solution.sources_used.length} sources)` : "Dual-Model Agreement";
-      drawerStatus.textContent = `${src} • ${Math.round((solution.confidence_score || 1) * 100)}% Confidence`;
-    }
-    if (btnFlag) {
-      btnFlag.className = "hud-btn-flag";
-      btnFlag.innerHTML = "<span>🚩 Flag Wrong</span>";
-    }
+    if (btnApply) btnApply.disabled = false;
   }
 
   // ==========================================================================
   // Core Actions: Solve & Apply
   // ==========================================================================
-  function extractCurrentQuiz(callback) {
-    const ext = window.QuizZyExtractor || window.__QuizZyExtractor;
-    if (ext && typeof ext.extractQuizFromDom === "function") {
-      const res = ext.extractQuizFromDom();
-      if (callback) callback(res);
+  function solveCurrentQuestion(callback) {
+    if (isSolving) return;
+    setSolvingState();
+
+    // 1. Extract from page via global extractor
+    let extracted = null;
+    if (window.__QuizZyExtractor && typeof window.__QuizZyExtractor.extractQuizFromDom === "function") {
+      extracted = window.__QuizZyExtractor.extractQuizFromDom(document);
+    }
+
+    if (!extracted || !extracted.success) {
+      sendExtensionMessage({ action: "EXTRACT_QUIZ" }, (res) => {
+        if (!res || !res.success || !res.data) {
+          isSolving = false;
+          checkHealth();
+          if (answerText) {
+            answerText.className = "hud-answer-text uncertain";
+            answerText.textContent = "Could not find quiz question on page";
+          }
+          if (callback) callback(null, null);
+          return;
+        }
+        dispatchSolveRequest(res.data, callback);
+      });
       return;
     }
-    // Fallback: message background service worker
-    sendExtensionMessage({ action: "EXTRACT_QUIZ" }, (res) => {
-      if (callback) callback(res);
-    });
+
+    dispatchSolveRequest(extracted, callback);
   }
 
-  function solveCurrentQuestion(onComplete) {
-    setSolvingState();
-    extractCurrentQuiz((extracted) => {
-      if (!extracted || !extracted.success || !extracted.question) {
-        renderSolution({ status: "error", reason: extracted?.error || "Could not detect active quiz question on page." });
-        if (onComplete) onComplete(null, extracted);
+  function dispatchSolveRequest(extracted, callback) {
+    const payload = {
+      subject: extracted.subject || "General",
+      q_type: extracted.q_type || "mcq",
+      question: extracted.question,
+      options: extracted.options || []
+    };
+
+    sendExtensionMessage({ action: "SOLVE_REQUEST", payload }, (res) => {
+      if (!res || !res.success || !res.data) {
+        isSolving = false;
+        checkHealth();
+        if (answerText) {
+          answerText.className = "hud-answer-text uncertain";
+          answerText.textContent = res && res.error ? res.error : "Backend solve error";
+        }
+        if (callback) callback(null, extracted);
         return;
       }
 
-      const solvePayload = {
-        subject: extracted.subject || "General",
-        q_type: extracted.q_type || "auto",
-        question: extracted.question,
-        options: extracted.options || [],
-        bypass_cache: false
-      };
-
-      sendExtensionMessage({ action: "SOLVE_REQUEST", payload: solvePayload }, (res) => {
-        if (!res || !res.success || !res.data) {
-          renderSolution({ status: "error", reason: res?.error || "Backend solve request failed." }, extracted);
-          if (onComplete) onComplete(null, extracted);
-          return;
-        }
-
-        renderSolution(res.data, extracted);
-        if (onComplete) onComplete(res.data, extracted);
-      });
+      renderSolution(res.data, extracted);
+      if (callback) callback(res.data, extracted);
     });
   }
 
-  function applyCurrentSolution(onComplete) {
+  function applyCurrentSolution(callback) {
     if (!latestSolution || latestSolution.status !== "ok") {
-      if (onComplete) onComplete({ success: false, error: "No valid solution to apply." });
+      if (callback) callback({ success: false, reason: "No valid solution to apply" });
       return;
     }
 
     const actionPayload = {
-      q_type: latestSolution.q_type,
-      selected_index: latestSolution.selected_index,
-      selected_text: latestSolution.selected_text,
+      q_type: latestSolution.q_type || "mcq",
       answer: latestSolution.answer,
-      permutation_indices: latestSolution.permutation_indices,
-      ordered_texts: latestSolution.ordered_texts
+      selected_index: latestSolution.selected_index,
+      targetText: latestSolution.selected_text || (latestExtracted?.options?.[latestSolution.selected_index]),
+      ordered_indices: latestSolution.ordered_indices,
+      ordered_texts: latestSolution.ordered_texts,
+      target_permutation: latestSolution.ordered_indices
     };
 
-    const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
-    if (exec && typeof exec.executeAction === "function") {
-      const res = exec.executeAction(actionPayload);
-      if (pillText) pillText.textContent = `Applied: ${pillText.textContent}`;
-      if (onComplete) onComplete(res);
+    if (window.__QuizZyExecutor && typeof window.__QuizZyExecutor.executeQuizAction === "function") {
+      const res = window.__QuizZyExecutor.executeQuizAction(actionPayload);
+      if (callback) callback(res);
       return;
     }
 
-    sendExtensionMessage({ action: "EXECUTE_QUIZ_ACTION", payload: actionPayload }, (res) => {
-      if (pillText && res && res.success) {
-        pillText.textContent = `Applied: ${pillText.textContent}`;
-      }
-      if (onComplete) onComplete(res);
+    sendExtensionMessage({ action: "EXECUTE_ACTION", payload: actionPayload }, (res) => {
+      if (callback) callback(res);
     });
   }
 
-  // ==========================================================================
-  // Autonomous Mode Execution Loop with Guardrails
-  // ==========================================================================
-  let autoStepCount = 0;
-  let autoMaxSteps = 10;
-  let prevAutoSig = "";
-  let stuckCount = 0;
-
-  function getQuestionSig(extracted) {
-    if (!extracted || !extracted.question) return "";
-    const qStr = String(extracted.question || "").trim();
-    const optsStr = Array.isArray(extracted.options)
-      ? extracted.options.map((o) => (typeof o === "string" ? o.trim() : JSON.stringify(o))).join("|")
-      : "";
-    return `${qStr}||${optsStr}`;
-  }
-
   function clickNextOnPage(callback) {
-    const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
-    if (exec && typeof exec.clickNextButton === "function") {
-      exec.clickNextButton().then((res) => {
+    if (window.__QuizZyExecutor && typeof window.__QuizZyExecutor.clickNextButton === "function") {
+      window.__QuizZyExecutor.clickNextButton().then((res) => {
         if (callback) callback(res);
       }).catch((err) => {
         if (callback) callback({ ok: false, error: err.message });
@@ -1069,124 +1014,96 @@
     }
 
     sendExtensionMessage({ action: "CLICK_NEXT_BUTTON" }, (res) => {
-      if (callback) callback(res);
+      if (callback) callback(res && res.result ? res.result : res);
     });
   }
 
-  function waitForQuestionAdvance(oldSig, onReady, maxWaitMs = 3800) {
-    const start = Date.now();
-    const pollInterval = 150;
-
-    function poll() {
-      if (!isAutoRunning) return;
-
-      extractCurrentQuiz((newExt) => {
-        if (!isAutoRunning) return;
-
-        const newSig = getQuestionSig(newExt);
-        if (newSig && newSig !== oldSig) {
-          onReady(newExt);
-          return;
-        }
-
-        if (Date.now() - start >= maxWaitMs) {
-          onReady(newExt);
-          return;
-        }
-
-        setTimeout(poll, pollInterval);
-      });
-    }
-
-    setTimeout(poll, 250);
-  }
-
-  function startAutoMode() {
-    // Check host allowlist
-    const hostname = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : "localhost";
-    const isLocal = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || !hostname;
-
-    storage.get(["auto_mode_allowlist", "auto_max_steps"], (res) => {
-      const allowlist = Array.isArray(res?.auto_mode_allowlist) ? res.auto_mode_allowlist : ["localhost", "127.0.0.1", "::1"];
-      const allowed = isLocal || allowlist.includes(hostname) || (window.location.protocol === "file:");
-
-      if (!allowed) {
-        if (pillText) pillText.textContent = `Auto Mode Blocked: ${hostname} not in Allowlist`;
-        return;
+  // ==========================================================================
+  // Self-Sufficient Auto Mode
+  // ==========================================================================
+  function updateAutoButtonState(running) {
+    if (!btnAuto) return;
+    if (running) {
+      btnAuto.className = "hud-btn hud-btn-auto running";
+      if (autoLabel) autoLabel.textContent = "Stop";
+      if (autoIcon) {
+        autoIcon.innerHTML = '<rect x="6" y="6" width="12" height="12" fill="currentColor"></rect>';
       }
-
-      isAutoRunning = true;
-      autoStepCount = 0;
-      autoMaxSteps = Math.min(100, Math.max(1, parseInt(res?.auto_max_steps || 10)));
-      prevAutoSig = "";
-      stuckCount = 0;
-
-      if (btnAuto) {
-        btnAuto.classList.add("running");
-        if (autoLabel) autoLabel.textContent = "Stop";
-        if (autoIcon) {
-          autoIcon.innerHTML = '<rect x="6" y="6" width="12" height="12" fill="currentColor"></rect>';
-        }
-      }
-
-      runAutoStep();
-    });
-  }
-
-  function stopAutoMode(reason = "") {
-    isAutoRunning = false;
-    if (btnAuto) {
-      btnAuto.classList.remove("running");
+    } else {
+      btnAuto.className = "hud-btn hud-btn-auto";
       if (autoLabel) autoLabel.textContent = "Auto";
       if (autoIcon) {
         autoIcon.innerHTML = '<polygon points="5 3 19 12 5 21 5 3" fill="currentColor"></polygon>';
       }
     }
-    if (reason && pillText) {
-      pillText.textContent = `Auto Halted: ${reason}`;
+  }
+
+  function startAutoMode() {
+    isAutoRunning = true;
+    autoStepCount = 0;
+    updateAutoButtonState(true);
+
+    // Auto-allowlist the current host so user never needs a settings panel
+    const currentHost = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : "";
+    if (currentHost && storage && storage.get) {
+      storage.get(["allowedHosts"], (data) => {
+        const list = data.allowedHosts || [];
+        if (!list.includes(currentHost)) {
+          list.push(currentHost);
+          storage.set({ allowedHosts: list });
+        }
+      });
+    }
+
+    runAutoStep();
+  }
+
+  function stopAutoMode(message) {
+    isAutoRunning = false;
+    updateAutoButtonState(false);
+    if (message && answerText) {
+      if (message.includes("Completed")) {
+        answerText.className = "hud-answer-text complete";
+      } else {
+        answerText.className = "hud-answer-text ready";
+      }
+      answerText.textContent = message;
     }
   }
 
   function runAutoStep() {
     if (!isAutoRunning) return;
 
-    if (autoStepCount >= autoMaxSteps) {
-      stopAutoMode(`Reached limit of ${autoMaxSteps} steps.`);
+    if (autoStepCount >= 100) {
+      stopAutoMode("Auto Mode reached 100-step limit.");
       return;
     }
-
     autoStepCount++;
-    if (pillBadge) {
-      pillBadge.className = "hud-pill-badge";
-      pillBadge.textContent = `Auto [${autoStepCount}/${autoMaxSteps}]`;
-    }
 
     solveCurrentQuestion((solution, extracted) => {
       if (!isAutoRunning) return;
 
-      if (!solution || solution.status !== "ok" || solution.confidence_label === "uncertain") {
-        stopAutoMode("Model consensus uncertain. Guardrail halted.");
+      if (!solution || solution.status !== "ok") {
+        stopAutoMode("Model consensus uncertain. Auto Mode stopped.");
         return;
       }
 
-      // Check stuck question
-      const sig = getQuestionSig(extracted);
-      if (prevAutoSig && sig === prevAutoSig) {
-        stuckCount++;
-        if (stuckCount >= 2) {
-          stopAutoMode("Question did not advance after submit.");
+      // Check strict HIGH agreement constraint
+      if (chkStrict && chkStrict.checked) {
+        const isHigh = solution.confidence_label === "high" || solution.agreement_status === "both_agree";
+        if (!isHigh) {
+          stopAutoMode("Strict HIGH agreement required. Auto Mode stopped.");
           return;
         }
-      } else {
-        prevAutoSig = sig;
-        stuckCount = 0;
       }
 
-      // Apply answer to page
-      applyCurrentSolution((actionRes) => {
+      const prevSig = getQuestionSig(extracted);
+
+      // Apply answer once
+      applyCurrentSolution((applyRes) => {
         if (!isAutoRunning) return;
 
-        // Small delay then click Next
+        // Brief delay before clicking Submit / Next
         setTimeout(() => {
           if (!isAutoRunning) return;
 
@@ -1194,16 +1111,36 @@
             if (!isAutoRunning) return;
 
             if (nextRes && nextRes.step === "quiz_completed") {
-              stopAutoMode("Quiz completed successfully!");
+              stopAutoMode("Quiz Completed!");
               return;
             }
 
-            // Wait for next question to load
-            waitForQuestionAdvance(sig, (newExt) => {
-              if (!isAutoRunning) return;
-              // Brief pause before next cycle
-              setTimeout(runAutoStep, 450);
-            });
+            // Poll for question advance using composite signature
+            let pollAttempts = 0;
+            const pollInterval = setInterval(() => {
+              if (!isAutoRunning) {
+                clearInterval(pollInterval);
+                return;
+              }
+
+              pollAttempts++;
+              let currentExt = null;
+              if (window.__QuizZyExtractor && typeof window.__QuizZyExtractor.extractQuizFromDom === "function") {
+                currentExt = window.__QuizZyExtractor.extractQuizFromDom(document);
+              }
+
+              const newSig = getQuestionSig(currentExt);
+              if (newSig && newSig !== prevSig) {
+                clearInterval(pollInterval);
+                setTimeout(runAutoStep, 400);
+                return;
+              }
+
+              if (pollAttempts >= 25) { // 25 * 400ms = 10s timeout
+                clearInterval(pollInterval);
+                stopAutoMode("Question did not advance after submit.");
+              }
+            }, 400);
           });
         }, 500);
       });
@@ -1211,16 +1148,17 @@
   }
 
   // ==========================================================================
-  // UI Interactions & Toggles
+  // UI Interactions (Buttons, Drawer, Minimize)
   // ==========================================================================
   function setMinimized(minimized) {
     isMinimizedState = minimized;
     storage.set({ quizzy_hud_minimized: minimized });
     if (minimized) {
       if (fullBar) fullBar.classList.add("hidden");
-      if (minimizedPill) minimizedPill.classList.remove("hidden");
+      if (popover) popover.classList.add("hidden");
+      if (minPill) minPill.classList.remove("hidden");
     } else {
-      if (minimizedPill) minimizedPill.classList.add("hidden");
+      if (minPill) minPill.classList.add("hidden");
       if (fullBar) fullBar.classList.remove("hidden");
     }
   }
@@ -1247,7 +1185,6 @@
     stopAutoMode();
   }
 
-  // Button listeners
   if (btnSolve) {
     btnSolve.addEventListener("click", () => solveCurrentQuestion());
   }
@@ -1259,87 +1196,71 @@
   if (btnAuto) {
     btnAuto.addEventListener("click", () => {
       if (isAutoRunning) {
-        stopAutoMode("Halted by user.");
+        stopAutoMode("Auto Mode stopped.");
       } else {
         startAutoMode();
       }
     });
   }
 
-  if (btnInfo) {
-    btnInfo.addEventListener("click", () => {
-      isDrawerOpen = !isDrawerOpen;
-      if (isDrawerOpen) {
-        drawer.classList.remove("hidden");
-      } else {
-        drawer.classList.add("hidden");
-      }
+  if (btnMore) {
+    btnMore.addEventListener("click", () => {
+      if (popover) popover.classList.toggle("hidden");
     });
   }
 
-  if (btnMinimize) {
-    btnMinimize.addEventListener("click", () => setMinimized(true));
+  if (btnMin) {
+    btnMin.addEventListener("click", () => setMinimized(true));
   }
 
-  if (minimizedPill) {
-    minimizedPill.addEventListener("click", (e) => {
-      if (!isDragging) setMinimized(false);
-    });
-  }
-
-  if (btnClose) {
-    btnClose.addEventListener("click", hide);
+  if (minPill) {
+    minPill.addEventListener("click", () => setMinimized(false));
   }
 
   if (btnFlag) {
     btnFlag.addEventListener("click", () => {
       if (!latestSolution || !latestExtracted) return;
       btnFlag.disabled = true;
-      btnFlag.innerHTML = "<span>Flagging...</span>";
 
-      const feedbackPayload = {
+      const payload = {
         subject: latestExtracted.subject || "General",
-        q_type: latestSolution.q_type || "mcq",
+        q_type: latestExtracted.q_type || "mcq",
         question: latestExtracted.question,
         options: latestExtracted.options || [],
         wrong_answer: latestSolution.answer,
         is_unverified_flag: true
       };
 
-      sendExtensionMessage({ action: "SUBMIT_FEEDBACK", payload: feedbackPayload }, (res) => {
+      sendExtensionMessage({ action: "SUBMIT_FEEDBACK", payload }, (res) => {
         btnFlag.disabled = false;
         if (res && res.success) {
           btnFlag.className = "hud-btn-flag flagged";
-          btnFlag.innerHTML = "<span>✓ Flagged & Evicted</span>";
-          if (pillText) pillText.textContent = "Answer flagged wrong. Cache evicted.";
-        } else {
-          btnFlag.innerHTML = "<span>Flag Failed</span>";
+          btnFlag.innerHTML = "<span>✓ Evicted</span>";
+          if (answerText) {
+            answerText.className = "hud-answer-text ready";
+            answerText.textContent = "Answer flagged wrong. Cache evicted.";
+          }
         }
       });
     });
   }
 
   // ==========================================================================
-  // Global Keyboard Shortcuts (Alt+S, Alt+A, Escape)
+  // Keyboard Shortcuts (Alt+S, Alt+A, Escape)
   // ==========================================================================
   function onKeyDown(e) {
-    // Escape key kill switch
     if (e.key === "Escape" || e.key === "Esc") {
       if (isAutoRunning) {
-        stopAutoMode("Escape key kill switch triggered.");
+        stopAutoMode("Escape key pressed.");
         e.preventDefault();
         return;
       }
     }
-
-    // Alt+S: Extract & Solve
     if (e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
       solveCurrentQuestion();
       return;
     }
-
-    // Alt+A: Apply Answer Once
     if (e.altKey && (e.key === "a" || e.key === "A")) {
       e.preventDefault();
       applyCurrentSolution();
@@ -1351,23 +1272,26 @@
     window.addEventListener("keydown", onKeyDown, true);
   }
 
-  // Runtime message listener for kill switch & commands from background
+  // Runtime message listener for background commands
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message) => {
       if (!message || !message.action) return;
       if (message.action === "KILL_SWITCH_TRIGGERED") {
         if (isAutoRunning) {
-          stopAutoMode(message.reason || "Background kill switch triggered.");
+          stopAutoMode(message.reason || "Kill switch triggered.");
         }
       }
       if (message.action === "TOGGLE_FLOATING_HUD_COMMAND") {
         toggleVisibility();
       }
+      if (message.action === "SHOW_FLOATING_HUD_COMMAND") {
+        show();
+      }
     });
   }
 
   // ==========================================================================
-  // Export Instance to Window
+  // Public Instance Definition
   // ==========================================================================
   const hudInstance = {
     host,

@@ -28,68 +28,101 @@ async function resolveTargetTab(message, sender) {
 }
 
 // Injects extractor, executor, and floating HUD into target tab
-async function injectAndToggleFloatingHud(tabId) {
-  if (!tabId) throw new Error("No valid tabId for HUD injection.");
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    files: ["extractor.js"]
-  });
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    files: ["executor.js"]
-  });
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    files: ["floating_hud.js"]
-  });
-  return results && results[0] ? results[0].result : { success: true };
+async function injectAndToggleFloatingHud(tabId, shouldToggle = true) {
+  if (!tabId) return { success: false };
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      files: ["extractor.js"]
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      files: ["executor.js"]
+    });
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      files: ["floating_hud.js"]
+    });
+
+    if (shouldToggle) {
+      chrome.tabs.sendMessage(tabId, { action: "TOGGLE_FLOATING_HUD_COMMAND" }).catch(() => {});
+    } else {
+      chrome.tabs.sendMessage(tabId, { action: "SHOW_FLOATING_HUD_COMMAND" }).catch(() => {});
+    }
+
+    return results && results[0] ? results[0].result : { success: true };
+  } catch (err) {
+    console.warn("[QuizZy Service Worker] Injection failed:", err);
+    return { success: false, error: err.message };
+  }
 }
 
-// Configure side panel behavior on installation / startup
+// Pre-seed default allowed hosts in chrome.storage.local (including learning.ccbp.in)
+function initializeStorageDefaults() {
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(["allowedHosts"], (data) => {
+      const current = data.allowedHosts || [];
+      const defaults = ["127.0.0.1", "localhost", "::1", "learning.ccbp.in"];
+      let modified = false;
+      for (const d of defaults) {
+        if (!current.includes(d)) {
+          current.push(d);
+          modified = true;
+        }
+      }
+      if (modified || !data.allowedHosts) {
+        chrome.storage.local.set({ allowedHosts: current });
+      }
+    });
+  }
+}
+
+if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onInstalled) {
+  chrome.runtime.onInstalled.addListener(() => {
+    initializeStorageDefaults();
+  });
+}
+initializeStorageDefaults();
+
+// Configure side panel behavior: Disable opening on action click so Floating Bar is the primary UX
 if (typeof chrome !== "undefined" && chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((err) => {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch((err) => {
     console.warn("[QuizZy Service Worker] setPanelBehavior warning:", err);
   });
 }
 
-// Fallback action click listener if setPanelBehavior is not supported
+// Action click listener: Clicking extension toolbar icon immediately toggles the Floating Bar on page!
 if (typeof chrome !== "undefined" && chrome.action && chrome.action.onClicked) {
   chrome.action.onClicked.addListener(async (tab) => {
-    if (chrome.sidePanel && typeof chrome.sidePanel.open === "function") {
-      try {
-        await chrome.sidePanel.open({ windowId: tab.windowId });
-      } catch (err) {
-        console.warn("[QuizZy Service Worker] chrome.sidePanel.open fallback warning:", err);
-      }
-    }
-    // Also toggle floating HUD on active tab!
     if (tab && tab.id) {
       try {
-        await injectAndToggleFloatingHud(tab.id);
-      } catch (_) {}
+        await injectAndToggleFloatingHud(tab.id, true);
+      } catch (err) {
+        console.warn("[QuizZy Service Worker] Failed to toggle floating HUD on action click:", err);
+      }
     }
   });
 }
 
 // ==========================================================================
-// Emergency Kill Switch: Tab Switch & Navigation Listeners
+// Emergency Kill Switch & Auto-Injection Listeners
 // ==========================================================================
 if (typeof chrome !== "undefined" && chrome.tabs) {
-  // If the user switches away to a different tab, immediately notify the side panel to halt Auto Mode
+  // If the user switches away to a different tab, immediately notify the HUD to halt Auto Mode
   if (chrome.tabs.onActivated) {
     chrome.tabs.onActivated.addListener((activeInfo) => {
       chrome.runtime.sendMessage({
         action: "KILL_SWITCH_TRIGGERED",
         reason: "Active tab changed by user. Auto Mode paused for safety.",
         tabId: activeInfo.tabId
-      }).catch(() => {}); // Catch if side panel is closed
+      }).catch(() => {});
     });
   }
 
-  // If the active page navigates away, halt Auto Mode
+  // If page navigates away, halt Auto Mode; when page finishes loading on allowed host, auto-inject HUD!
   if (chrome.tabs.onUpdated) {
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (changeInfo.status === "loading" && changeInfo.url) {
@@ -98,6 +131,26 @@ if (typeof chrome !== "undefined" && chrome.tabs) {
           reason: `Page navigated to ${changeInfo.url}. Auto Mode halted.`,
           tabId: tabId
         }).catch(() => {});
+      }
+
+      // Auto-launch Floating Bar on allowed host pages as soon as loading completes
+      if (changeInfo.status === "complete" && tab && tab.url) {
+        try {
+          const urlObj = new URL(tab.url);
+          const hostname = urlObj.hostname.toLowerCase();
+          const defaultAllowed = ["learning.ccbp.in", "127.0.0.1", "localhost", "::1"];
+          
+          if (defaultAllowed.includes(hostname)) {
+            injectAndToggleFloatingHud(tabId, false);
+          } else if (chrome.storage && chrome.storage.local) {
+            chrome.storage.local.get(["allowedHosts"], (data) => {
+              const allowed = data.allowedHosts || [];
+              if (allowed.includes(hostname)) {
+                injectAndToggleFloatingHud(tabId, false);
+              }
+            });
+          }
+        } catch (_) {}
       }
     });
   }

@@ -243,6 +243,7 @@ class MockNode {
     const s = new MockNode("shadow-root");
     s.mode = opts && opts.mode ? opts.mode : "open";
     s.host = this;
+    s.getElementById = (id) => s.querySelector('#' + id);
     this.shadowRoot = s;
     return s;
   }
