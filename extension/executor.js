@@ -78,7 +78,7 @@
    * Extracts clean visible text from elements while preserving KaTeX math formulas.
    * Mirrors 1:1 implementation in extractor.js.
    */
-  function getCleanVisibleText(rootEl) {
+  function getCleanVisibleText(rootEl, preserveWhitespace = false) {
     if (!rootEl) return "";
     let extracted = "";
 
@@ -92,6 +92,10 @@
 
       const tag = node.tagName.toLowerCase();
       if (tag === "script" || tag === "style" || tag === "noscript") return;
+      if (tag === "br") {
+        extracted += "\n";
+        return;
+      }
 
       const cls = (node.className && typeof node.className === "string") ? node.className : "";
       if (cls.includes("katex-mathml") || cls.includes("MJX_Assistive_MathML")) return;
@@ -124,7 +128,13 @@
     }
 
     walk(rootEl);
-    return extracted.replace(/\s+/g, " ").trim();
+    if (preserveWhitespace) {
+      return extracted
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n");
+    }
+    return extracted.replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\s+/g, " ").trim();
   }
 
   /**
@@ -150,6 +160,33 @@
     s = s.replace(/^[\u2022\u25E6\u25AA\u2023]\s*/, "");
 
     return s.trim();
+  }
+
+  /**
+   * Preserves multi-line indentation for code blocks while collapsing standard prose/math options.
+   * Strips decorative prefixes only on the first line.
+   * Mirrors 1:1 implementation in extractor.js.
+   */
+  function normalizeOptionWhitespace(text, hasCodeBlock) {
+    if (!text) return "";
+    const clean = String(text)
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
+
+    const isMultiLineCode = hasCodeBlock && clean.includes("\n");
+    if (isMultiLineCode) {
+      const lines = clean.split("\n");
+      while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+      while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+      if (lines.length === 0) return "";
+
+      lines[0] = stripDecorativePrefix(lines[0]);
+      return lines.join("\n");
+    }
+
+    const single = clean.replace(/\s+/g, " ").trim();
+    return stripDecorativePrefix(single);
   }
 
   /**
@@ -366,17 +403,26 @@
       : null;
 
     const targetText = payload.targetText || payload.selected_text || payload.answer || null;
-    const cleanTargetText = targetText ? stripDecorativePrefix(cleanText(targetText)) : null;
+    const targetHasCode = targetText ? (targetText.includes("\n") || /^\s*(def|class|import|return|for|while|if|else|print)\b/.test(targetText)) : false;
+    const cleanTargetText = targetText ? normalizeOptionWhitespace(targetText, targetHasCode) : null;
 
     // Clean text representations of all options using 1:1 extractor-identical logic
     const optionCleanTexts = options.map((optEl) => {
-      return stripDecorativePrefix(getCleanVisibleText(optEl)).trim();
+      const hasCode = !!(optEl.querySelector && optEl.querySelector("pre, code")) || (optEl.tagName && ["pre", "code"].includes(optEl.tagName.toLowerCase()));
+      const raw = getCleanVisibleText(optEl, hasCode);
+      return normalizeOptionWhitespace(raw, hasCode);
     });
 
     // If targetText was supplied, try matching by clean text first for full text parity
     if (cleanTargetText) {
       const textIdx = optionCleanTexts.findIndex((optText) => {
-        return optText === cleanTargetText || optText.toLowerCase() === cleanTargetText.toLowerCase();
+        if (!optText) return false;
+        if (optText === cleanTargetText) return true;
+        // For non-code single-line options, allow case-insensitive match
+        if (!targetHasCode && !optText.includes("\n")) {
+          return optText.toLowerCase() === cleanTargetText.toLowerCase();
+        }
+        return false;
       });
       if (textIdx !== -1) {
         targetIndex = textIdx;

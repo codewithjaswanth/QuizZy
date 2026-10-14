@@ -119,6 +119,32 @@
   }
 
   /**
+   * Preserves multi-line indentation for code blocks while collapsing standard prose/math options.
+   * Strips decorative prefixes only on the first line.
+   */
+  function normalizeOptionWhitespace(text, hasCodeBlock) {
+    if (!text) return "";
+    const clean = String(text)
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
+
+    const isMultiLineCode = hasCodeBlock && clean.includes("\n");
+    if (isMultiLineCode) {
+      const lines = clean.split("\n");
+      while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+      while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+      if (lines.length === 0) return "";
+
+      lines[0] = stripDecorativePrefix(lines[0]);
+      return lines.join("\n");
+    }
+
+    const single = clean.replace(/\s+/g, " ").trim();
+    return stripDecorativePrefix(single);
+  }
+
+  /**
    * Checks if an element is visible in the layout.
    */
   function isVisible(el) {
@@ -150,7 +176,7 @@
    * Extracts clean visible text while reading raw TeX from KaTeX/MathJax annotations
    * or normalizing KaTeX visual HTML fallback, ignoring hidden/duplicate elements (ZERO DOM MUTATION).
    */
-  function getCleanVisibleText(el) {
+  function getCleanVisibleText(el, preserveWhitespace = false) {
     if (!el) return "";
 
     function walk(node) {
@@ -165,6 +191,9 @@
       const tag = node.tagName.toLowerCase();
       if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template") {
         return "";
+      }
+      if (tag === "br") {
+        return "\n";
       }
 
       // Check inline display:none or visibility:hidden
@@ -261,7 +290,14 @@
       return text;
     }
 
-    return cleanText(walk(el));
+    const rawWalk = walk(el);
+    if (preserveWhitespace) {
+      return String(rawWalk)
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n");
+    }
+    return cleanText(rawWalk);
   }
 
   /**
@@ -605,9 +641,10 @@
       });
 
       options = optionElements.map((el) => {
-        const raw = getCleanVisibleText(el);
-        const stripped = stripDecorativePrefix(raw);
-        return stripped || raw;
+        const hasCode = !!(el.querySelector && el.querySelector("pre, code")) || (el.tagName && ["pre", "code"].includes(el.tagName.toLowerCase()));
+        const raw = getCleanVisibleText(el, hasCode);
+        const normalized = normalizeOptionWhitespace(raw, hasCode);
+        return normalized || raw;
       }).filter((t) => t.length > 0);
     }
 

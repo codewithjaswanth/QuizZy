@@ -676,7 +676,49 @@ async function main() {
     throw new Error("Target radio for '1 - 1/6' was not checked via text parity matching!");
   }
 
-  // Test 6: Re-Practice QUESTIONS ATTEMPTED: 15/15 + END PRACTICE Button Immunity
+  // Test 6: Multi-Line Python Code Option Extraction & Execution Parity
+  const pyQuizCard = el("div", "quiz-card", {}, [
+    el("div", "question-stem", {}, [
+      el("p", "", {}, ["What is the correct recursive implementation?"])
+    ]),
+    el("div", "options-list", {}, [
+      el("label", "option-item", {}, [
+        el("input", "", { type: "radio", name: "py1", value: "py_opt1" }),
+        el("pre", "", {}, [
+          el("code", "", {}, ["def solve(n):\n    if n <= 1:\n        return n\n    return solve(n - 1) + solve(n - 2)"])
+        ])
+      ]),
+      el("label", "option-item", {}, [
+        el("input", "", { type: "radio", name: "py1", value: "py_opt2" }),
+        el("pre", "", {}, [
+          el("code", "", {}, ["def solve(n):\n  if n <= 1:\n    return n\n  return solve(n - 1)"])
+        ])
+      ])
+    ])
+  ]);
+  doc.childNodes[1].childNodes = [];
+  doc.childNodes[1].appendChild(pyQuizCard);
+
+  const pyExtracted = extractor.extractQuizFromDom();
+  if (!pyExtracted.success || pyExtracted.options.length !== 2) {
+    throw new Error(`Python code option extraction failed: ${JSON.stringify(pyExtracted)}`);
+  }
+  const expectedOpt0 = "def solve(n):\n    if n <= 1:\n        return n\n    return solve(n - 1) + solve(n - 2)";
+  if (pyExtracted.options[0] !== expectedOpt0) {
+    throw new Error(`Expected option 0 with 4-space indentation, got:\n${pyExtracted.options[0]}`);
+  }
+
+  // Verify executor matches and clicks the multi-line option via targetText
+  const pyExec = executor.executeMcqAction({ targetText: expectedOpt0 });
+  if (!pyExec.success || pyExec.selected_index !== 0) {
+    throw new Error(`executeMcqAction with multi-line Python code failed: ${JSON.stringify(pyExec)}`);
+  }
+  const pyOpt1Radio = pyQuizCard.querySelector("input[value='py_opt1']");
+  if (!pyOpt1Radio || !pyOpt1Radio.checked) {
+    throw new Error("Target radio for multi-line Python option was not checked!");
+  }
+
+  // Test 7: Re-Practice QUESTIONS ATTEMPTED: 15/15 + END PRACTICE Button Immunity
   const repracticeContainer = el("div", "quiz-page", {}, [
     el("div", "top-bar", {}, [
       el("div", "stats", {}, ["QUESTIONS ATTEMPTED: 15/15"]),
@@ -705,7 +747,7 @@ async function main() {
     throw new Error(`Expected 'submit_then_next' during Re-Practice, got '${JSON.stringify(repracticeResult)}'`);
   }
 
-  // Test 7: True Quiz Completion Detection when all questions done and no Next button
+  // Test 8: True Quiz Completion Detection when all questions done and no Next button
   const finalQuestionSummary = el("div", "quiz-summary", {}, [
     el("div", "stats", {}, ["QUESTIONS ATTEMPTED: 15/15"]),
     el("h2", "", {}, ["Practice Completed"]),
@@ -719,7 +761,7 @@ async function main() {
     throw new Error(`Expected step 'quiz_completed' on summary screen, got '${JSON.stringify(finalCompleteResult)}'`);
   }
 
-  // Test 8: Idempotent Re-Injection Guard Check
+  // Test 9: Idempotent Re-Injection Guard Check
   if (!global.window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__) {
     throw new Error("window.__QUIZZY_EXECUTOR_LISTENER_REGISTERED__ was not set!");
   }
@@ -747,38 +789,64 @@ main().catch(err => {
         raise AssertionError(f"Node.js runtime live-site compatibility test failed with exit code {res.returncode}")
 
     assert "NODE_RUNTIME_TESTS_OK" in res.stdout, "Missing success confirmation in Node.js runtime tests"
-    print("  -> Passed Node.js runtime verification: KaTeX parity matching, idempotent injection, Re-Practice immunity, and true quiz completion verified.")
+    print("  -> Passed Node.js runtime verification: KaTeX parity, Python multi-line code preservation, idempotent injection, and Re-Practice immunity.")
 
 
 def test_backend_normalizer_math_and_code_non_collision():
-    """Verify backend normalizer and cache key generation preserve math, signs, single-letter options, and code collections."""
+    """Verify backend normalizer and cache key generation preserve math, signs, single-letter options, operators, and code collections."""
     print("\n[Test 8] Auditing backend normalizer and cache for math, code, and single-letter distinctness...")
     from backend.core.normalizer import normalize_text_answer, normalize_mcq_answer
     from backend.cache import compute_cache_key
 
-    # 1. Python collection distinctness
+    # 1. Single-letter synthetic label priority vs multi-char option match
+    # When options are ["B", "C", "A", "D"], raw "A" MUST resolve to synthetic letter 'A' (index 0), NOT option 'A' (index 2)!
+    res_a = normalize_mcq_answer("A", ["B", "C", "A", "D"])
+    assert res_a.canonical_key == "A", f"Expected canonical_key 'A', got '{res_a.canonical_key}'"
+    assert res_a.selected_index == 0, f"Expected selected_index 0, got {res_a.selected_index}"
+    assert res_a.selected_text == "B"
+
+    # When options are ["X", "A - B", "Y", "Z"], raw "A - B" MUST resolve to option text 'A - B' (canonical_key 'B', index 1)
+    res_ab = normalize_mcq_answer("A - B", ["X", "A - B", "Y", "Z"])
+    assert res_ab.canonical_key == "B", f"Expected canonical key 'B' for option text 'A - B', got '{res_ab.canonical_key}'"
+    assert res_ab.selected_index == 1
+
+    # 2. Programming comparisons distinctness
+    comps = ["a == b", "a != b", "a <= b", "a >= b", "a < b", "a > b"]
+    norm_comps = [normalize_text_answer(c) for c in comps]
+    assert len(set(norm_comps)) == len(comps), f"Comparison operators must be distinct: {norm_comps}"
+
+    # 3. Arithmetic and exponent operators distinctness
+    ops = ["10 // 3", "10 / 3", "10 % 3", "2 ** 3", "2 * 3"]
+    norm_ops = [normalize_text_answer(o) for o in ops]
+    assert len(set(norm_ops)) == len(ops), f"Arithmetic operators must be distinct: {norm_ops}"
+
+    # 4. Comment symbols & operator non-emptiness
+    syms = ["#", "//", "/* */", "--"]
+    for sym in syms:
+        norm_sym = normalize_text_answer(sym)
+        assert norm_sym != "", f"Symbol '{sym}' must not normalize to empty string!"
+
+    # 5. HTML tags vs plain text
+    assert normalize_text_answer("<h1>") != normalize_text_answer("h1"), "HTML tag '<h1>' must not collide with 'h1'!"
+
+    # 6. Python collection distinctness
     assert normalize_text_answer("[1, 2, 3]") != normalize_text_answer("(1, 2, 3)"), "List and tuple must not collide!"
     assert normalize_text_answer("[1, 2, 3]") != normalize_text_answer("{1, 2, 3}"), "List and set must not collide!"
     assert normalize_text_answer("(1, 2, 3)") != normalize_text_answer("{1, 2, 3}"), "Tuple and set must not collide!"
 
-    # 2. Math signs, fractions, and subtraction
+    # 7. Math signs, fractions, and subtraction
     assert normalize_text_answer("-1/6") != normalize_text_answer("1/6"), "Negative and positive fraction must not collide!"
     assert normalize_text_answer("1 - 1/6") != normalize_text_answer("1/6"), "Subtraction and fraction must not collide!"
     assert normalize_text_answer("1 - 1/6") != normalize_text_answer("1 1/6"), "Subtraction must preserve operator!"
     assert normalize_text_answer("1.5") != normalize_text_answer("15"), "Decimal and integer must not collide!"
 
-    # 3. Single-letter options and math variables
+    # 8. Single-letter options and math variables
     assert normalize_text_answer("A") == "a" != "", "Single letter option 'A' must not be stripped as article!"
     assert normalize_text_answer("a - b") == "a - b", "Math expression 'a - b' must not have 'a ' stripped!"
     assert normalize_text_answer("A : B") == "a : b", "Ratio expression 'A : B' must not have 'A ' stripped!"
     assert normalize_text_answer("P(A)") == "p(a)", "Probability notation 'P(A)' must be preserved!"
 
-    # 4. MCQ normalization priority (option text vs synthetic letter)
-    mcq = normalize_mcq_answer("A - B", ["X", "A - B", "Y", "Z"])
-    assert mcq.canonical_key == "B", f"Expected canonical key 'B' for option text 'A - B', got '{mcq.canonical_key}'"
-    assert mcq.selected_index == 1
-
-    # 5. Cache key distinctness
+    # 9. Cache key distinctness
     k_list = compute_cache_key("Python", "mcq", "Evaluate", ["[1, 2, 3]", "None"])
     k_tuple = compute_cache_key("Python", "mcq", "Evaluate", ["(1, 2, 3)", "None"])
     assert k_list != k_tuple, "Cache keys for list and tuple options must not collide!"
@@ -788,6 +856,20 @@ def test_backend_normalizer_math_and_code_non_collision():
     assert k_frac != k_sub, "Cache keys for fraction and subtraction must not collide!"
 
     print("  -> Passed backend normalizer and cache math/code non-collision invariants.")
+
+
+def test_sidepanel_html_escaping():
+    """Verify sidepanel.js escapes < and > (via escapeHtml or textContent) whenever rendering option or answer strings."""
+    print("\n[Test 9] Auditing extension/sidepanel.js HTML entity escaping...")
+    sidepanel_js = (PROJECT_ROOT / "extension" / "sidepanel.js").read_text(encoding="utf-8")
+    assert "function escapeHtml" in sidepanel_js, "sidepanel.js must define escapeHtml"
+    assert '.replace(/</g, "&lt;")' in sidepanel_js, "escapeHtml must escape '<'"
+    assert '.replace(/>/g, "&gt;")' in sidepanel_js, "escapeHtml must escape '>'"
+    assert '.replace(/&/g, "&amp;")' in sidepanel_js, "escapeHtml must escape '&'"
+    assert "escapeHtml(opt)" in sidepanel_js, "preview options must be escaped with escapeHtml"
+    assert "escapeHtml(optText)" in sidepanel_js, "MCQ options must be escaped with escapeHtml"
+    assert "escapeHtml(text)" in sidepanel_js, "Order items must be escaped with escapeHtml"
+    print("  -> Passed sidepanel.js HTML escaping audit: all dynamic text safely escaped.")
 
 
 if __name__ == "__main__":
@@ -803,6 +885,7 @@ if __name__ == "__main__":
     test_mock_quiz_react_math_scenario()
     test_nodejs_runtime_verification()
     test_backend_normalizer_math_and_code_non_collision()
+    test_sidepanel_html_escaping()
 
     print("\n" + "=" * 70)
     print("ALL LIVE-SITE COMPATIBILITY TESTS PASSED (100% SUCCESS)")

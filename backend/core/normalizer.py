@@ -70,18 +70,32 @@ def normalize_text_answer(text: str) -> str:
     s = unicodedata.normalize("NFKC", str(text))
     s = s.lower().strip()
 
-    # Strip surrounding quotes
-    s = s.strip("\"'“”‘’`")
+    # Strip surrounding quotes if wrapped around other content
+    if len(s) >= 2 and (
+        (s.startswith('"') and s.endswith('"')) or
+        (s.startswith("'") and s.endswith("'")) or
+        (s.startswith("`") and s.endswith("`")) or
+        (s.startswith("“") and s.endswith("”")) or
+        (s.startswith("‘") and s.endswith("’"))
+    ):
+        inner = s[1:-1].strip()
+        if inner:
+            s = inner
 
     # Strip leading English articles ONLY when followed by a multi-letter word (prose)
-    # Never strip standalone letters ('A', 'a') or math expressions ('a - b', 'a : b', 'a = b', 'p(a)')
+    # Never strip standalone letters ('A', 'a') or math/code expressions ('a - b', 'a : b', 'a = b', 'p(a)')
     s = re.sub(r"^(?:a|an)\s+(?=[a-z]{2,}\b)", "", s)
     s = re.sub(r"^the\s+(?=[a-z]{2,}\b)", "", s)
 
-    # Strip trailing punctuation
-    s = re.sub(r"[.,;:!?]+$", "", s).strip()
+    # Strip trailing punctuation ONLY for prose words (e.g. 'cat!' -> 'cat', 'apple.' -> 'apple')
+    # NEVER strip trailing punctuation when:
+    # 1. String is symbol-only (e.g. '#', '//', '/* */', '--', '==', '!=', '!', '?', ':')
+    # 2. Punctuation is part of an operator (e.g. '!=', '!==', '<=', '>=')
+    if re.search(r"[a-z0-9]", s):
+        # Only strip trailing [.,;:!?]+ if preceded by an alphanumeric character AND not part of operator symbols
+        s = re.sub(r"(?<=[a-z0-9])(?<![!<>=&|~/%*#_@^+-])[.,;:!?]+$", "", s).strip()
 
-    # Collapse multiple internal whitespace
+    # Collapse multiple internal whitespace (preserving single space)
     s = re.sub(r"\s+", " ", s).strip()
 
     # Canonicalize booleans
@@ -118,38 +132,69 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
 
     # Convert raw_answer to string
     raw_str = str(raw_answer).strip()
+    if not raw_str:
+        raise NormalizationError(f"Empty MCQ answer cannot be normalized with options {valid_letters}")
 
-    # Priority 1: Check if answer is explicitly a single letter e.g. 'B', 'B.', '(B)', '[B]', 'Option B'
-    letter_match = re.match(r"^(?:option\s+)?(?:\(?\[?([A-Za-z])\)\]?[\.\:\)]?)$", raw_str, re.IGNORECASE)
-    candidate_letter = None
-    if letter_match:
-        cand = letter_match.group(1).upper()
-        if cand in valid_letters:
-            candidate_letter = cand
-
-    if candidate_letter is not None:
-        idx = ord(candidate_letter) - 65
+    # Step 1: Standalone Single-Character Synthetic Label
+    # If raw_answer.strip() is a single ASCII letter in A..F (or a..f) whose index 0..5 is < len(options),
+    # ALWAYS resolve it directly as that synthetic label. This guarantees that if options are ['B', 'C', 'A', 'D']
+    # and the LLM returns 'A', it reliably resolves to option index 0 (synthetic label 'A'),
+    # and is NEVER hijacked by option text 'A' at index 2!
+    if len(raw_str) == 1 and raw_str.upper() in valid_letters:
+        cand = raw_str.upper()
+        idx = ord(cand) - 65
         return NormalizedAnswer(
-            canonical_key=candidate_letter,
+            canonical_key=cand,
             selected_index=idx,
             selected_text=options[idx],
             raw_answer=raw_answer,
         )
 
-    # Priority 2: Check if the raw string matches the text of an option
-    normalized_raw = normalize_text_answer(raw_str)
-    for i, opt in enumerate(options):
-        if normalize_text_answer(opt) == normalized_raw:
-            letter = chr(65 + i)
+    # Step 2: Multi-Character Exact Option Text Match
+    # If len(raw_answer.strip()) > 1, check if normalize_text_answer(raw_answer) (or stripped raw_answer)
+    # exactly matches one of the options BEFORE attempting prefix-based label extraction.
+    # This guarantees 'A - B' matches option 'A - B', while 'A' remains synthetic label A.
+    if len(raw_str) > 1:
+        norm_raw = normalize_text_answer(raw_str)
+        for i, opt in enumerate(options):
+            if opt.strip() == raw_str or normalize_text_answer(opt) == norm_raw:
+                letter = chr(65 + i)
+                return NormalizedAnswer(
+                    canonical_key=letter,
+                    selected_index=i,
+                    selected_text=options[i],
+                    raw_answer=raw_answer,
+                )
+
+    # Step 3: Explicit Label Prefix Extraction & Fallback
+    # Check if purely a single letter wrapped in parens/brackets, e.g. '(B)', '[B]', 'Option B', 'B.'
+    wrapped_match = re.match(r"^(?:option\s+)?(?:\(?\[?([A-Fa-f])\)\]?[\.\:\)]?)$", raw_str, re.IGNORECASE)
+    if wrapped_match:
+        cand = wrapped_match.group(1).upper()
+        if cand in valid_letters:
+            idx = ord(cand) - 65
             return NormalizedAnswer(
-                canonical_key=letter,
-                selected_index=i,
-                selected_text=options[i],
+                canonical_key=cand,
+                selected_index=idx,
+                selected_text=options[idx],
                 raw_answer=raw_answer,
             )
 
-    # Priority 3: Fallback loose letter match if no option text matched
-    loose_match = re.search(r"\b([A-Za-z])\b", raw_str)
+    # Explicit label prefix, e.g. 'A) ...', 'A. ...', 'A: ...', '(A) ...'
+    prefix_match = re.match(r"^(?:option\s+)?(?:\(?([A-Fa-f])[\.\)\:\-]\s*|\(([A-Fa-f])\)\s*)", raw_str, re.IGNORECASE)
+    if prefix_match:
+        cand = (prefix_match.group(1) or prefix_match.group(2)).upper()
+        if cand in valid_letters:
+            idx = ord(cand) - 65
+            return NormalizedAnswer(
+                canonical_key=cand,
+                selected_index=idx,
+                selected_text=options[idx],
+                raw_answer=raw_answer,
+            )
+
+    # Loose single letter match if isolated by word boundaries (e.g. "The answer is B")
+    loose_match = re.search(r"\b([A-Fa-f])\b", raw_str)
     if loose_match:
         cand = loose_match.group(1).upper()
         if cand in valid_letters:
@@ -162,9 +207,10 @@ def normalize_mcq_answer(raw_answer: Any, options: List[str]) -> NormalizedAnswe
             )
 
     # Substring match if unambiguous
+    norm_raw = normalize_text_answer(raw_str)
     matches = [
         i for i, opt in enumerate(options)
-        if normalized_raw and normalized_raw in normalize_text_answer(opt)
+        if norm_raw and norm_raw in normalize_text_answer(opt)
     ]
     if len(matches) == 1:
         idx = matches[0]
