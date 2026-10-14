@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -121,11 +122,12 @@ def test_executor_two_step_flow():
     assert "isSubmitCandidate" in code, "isSubmitCandidate helper missing"
     assert "isNextCandidate" in code, "isNextCandidate helper missing"
     assert "submit_then_next_clicked" in code, "submit_then_next_clicked action missing"
-    assert "500" in code, "Must wait ~500ms between submit and next click"
+    assert "pollIntervalMs" in code or "120" in code, "Must poll DOM for Next button"
+    assert "4500" in code, "Must have 4500ms polling ceiling"
 
     # 2. Check React radio input event dispatch in executeMcqAction
     assert "input[type='radio']" in code
-    assert "radio.checked = true" in code
+    assert "radio.checked" in code
     assert 'new Event("change"' in code or "new Event('change'" in code
     assert 'new Event("input"' in code or "new Event('input'" in code
 
@@ -136,7 +138,7 @@ def test_executor_two_step_flow():
 
     assert "func: async (customNextSelector)" in bg_code, "background.js must use async func in executeScript"
     assert "await window.QuizZyExecutor.clickNextButton" in bg_code, "background.js must await clickNextButton"
-    print("  -> Passed executor.js & background.js: Two-step SUBMIT -> NEXT flow with 500ms delay & React radio events.")
+    print("  -> Passed executor.js & background.js: Two-step SUBMIT -> NEXT flow with DOM polling & React radio events.")
 
 
 def test_sidepanel_apply_once_and_telemetry():
@@ -172,6 +174,404 @@ def test_mock_quiz_react_math_scenario():
     print("  -> Passed mock_quiz.html: Scenario 5 (learning.ccbp.in React math) verified.")
 
 
+def test_nodejs_runtime_verification():
+    """Execute real Node.js runtime verification against KaTeX DOM, tricky decimals/ratios, multi-block code questions, and async 900ms polling."""
+    print("\n[Test 7] Executing real Node.js runtime verification (node -e)...")
+
+    js_script = r"""
+const path = require("path");
+
+class MockNode {
+  constructor(tagOrText, isText = false) {
+    if (isText) {
+      this.nodeType = 3;
+      this.nodeValue = String(tagOrText);
+      this._text = this.nodeValue;
+      this.childNodes = [];
+    } else {
+      this.nodeType = 1;
+      this.tagName = String(tagOrText).toUpperCase();
+      this.className = "";
+      this.attributes = {};
+      this.childNodes = [];
+      this.parentElement = null;
+      this.parentNode = null;
+      this.disabled = false;
+      this.checked = false;
+      this.value = "";
+      this._text = "";
+      this.listeners = {};
+    }
+  }
+
+  get classList() {
+    const self = this;
+    return {
+      contains(cls) {
+        return (self.className || "").split(/\s+/).includes(cls);
+      },
+      add(cls) {
+        const classes = new Set((self.className || "").split(/\s+/).filter(Boolean));
+        classes.add(cls);
+        self.className = Array.from(classes).join(" ");
+      },
+      remove(cls) {
+        const classes = new Set((self.className || "").split(/\s+/).filter(Boolean));
+        classes.delete(cls);
+        self.className = Array.from(classes).join(" ");
+      }
+    };
+  }
+
+  getAttribute(attr) {
+    if (attr === "class") return this.className;
+    if (attr === "disabled" && this.disabled) return "";
+    return this.attributes[attr] || null;
+  }
+
+  hasAttribute(attr) {
+    if (attr === "class") return Boolean(this.className);
+    return attr in this.attributes;
+  }
+
+  setAttribute(attr, val) {
+    if (attr === "class") {
+      this.className = String(val);
+    } else {
+      this.attributes[attr] = String(val);
+    }
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    child.parentNode = this;
+    const last = this.childNodes[this.childNodes.length - 1];
+    if (last) {
+      last.nextSibling = child;
+      child.previousSibling = last;
+    }
+    this.childNodes.push(child);
+    this.firstChild = this.childNodes[0];
+    this.lastChild = child;
+    return child;
+  }
+
+  get children() {
+    return this.childNodes.filter(c => c.nodeType === 1);
+  }
+
+  get textContent() {
+    if (this.nodeType === 3) return this.nodeValue;
+    return this.childNodes.map(c => c.textContent).join("");
+  }
+
+  set textContent(v) {
+    if (this.nodeType === 3) {
+      this.nodeValue = String(v);
+    } else {
+      this.childNodes = [new MockNode(String(v), true)];
+      this.firstChild = this.childNodes[0];
+      this.lastChild = this.childNodes[0];
+    }
+  }
+
+  get innerText() {
+    if (this.nodeType === 3) return this.nodeValue;
+    return this.childNodes.map(c => c.innerText).join("");
+  }
+
+  set innerText(v) {
+    this.textContent = v;
+  }
+
+  getBoundingClientRect() {
+    return { width: 100, height: 40, top: 10, left: 10 };
+  }
+
+  addEventListener(type, fn) {
+    if (!this.listeners[type]) this.listeners[type] = [];
+    this.listeners[type].push(fn);
+  }
+
+  dispatchEvent(event) {
+    if (this.listeners[event.type]) {
+      for (const fn of this.listeners[event.type]) {
+        fn.call(this, event);
+      }
+    }
+    if (event.bubbles && this.parentElement) {
+      this.parentElement.dispatchEvent(event);
+    }
+    return true;
+  }
+
+  click() {
+    this.dispatchEvent({ type: "click", bubbles: true, target: this });
+  }
+
+  focus() {}
+
+  matches(sel) {
+    if (!sel) return false;
+    sel = sel.trim();
+    if (this.nodeType !== 1) return false;
+
+    const attrMatch = sel.match(/^([a-zA-Z0-9_-]+|\.[a-zA-Z0-9_-]+)?\[([^\]]+)\]$/);
+    if (attrMatch) {
+      const base = attrMatch[1];
+      const attrExpr = attrMatch[2];
+      if (base) {
+        if (base.startsWith(".")) {
+          if (!this.classList.contains(base.slice(1))) return false;
+        } else {
+          if (this.tagName.toLowerCase() !== base.toLowerCase()) return false;
+        }
+      }
+      if (attrExpr.includes("*=")) {
+        const [k, v] = attrExpr.split("*=");
+        const cleanV = v.replace(/['"]/g, "").trim();
+        return (this.getAttribute(k.trim()) || "").includes(cleanV);
+      } else if (attrExpr.includes("=")) {
+        const [k, v] = attrExpr.split("=");
+        const cleanV = v.replace(/['"]/g, "").trim();
+        if (k.trim() === "type") return this.type === cleanV;
+        return this.getAttribute(k.trim()) === cleanV;
+      }
+      return this.hasAttribute(attrExpr.trim());
+    }
+
+    if (sel.startsWith(".")) {
+      return this.classList.contains(sel.slice(1));
+    }
+    if (sel.startsWith("#")) {
+      return this.getAttribute("id") === sel.slice(1);
+    }
+    return this.tagName.toLowerCase() === sel.toLowerCase();
+  }
+
+  closest(sel) {
+    let cur = this;
+    while (cur) {
+      if (cur.nodeType === 1 && cur.matches(sel)) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  querySelector(sel) {
+    return this.querySelectorAll(sel)[0] || null;
+  }
+
+  querySelectorAll(sel) {
+    const results = [];
+    const parts = sel.split(",").map(s => s.trim());
+
+    function check(node) {
+      if (node.nodeType === 1) {
+        for (const p of parts) {
+          if (node.matches(p)) {
+            results.push(node);
+            break;
+          }
+        }
+      }
+      for (const child of node.childNodes) {
+        check(child);
+      }
+    }
+
+    for (const child of this.childNodes) {
+      check(child);
+    }
+    return results;
+  }
+}
+
+// Global environment
+global.window = global;
+global.getComputedStyle = () => ({ display: "block", visibility: "visible", opacity: "1" });
+global.Event = class Event {
+  constructor(type, opts = {}) {
+    this.type = type;
+    this.bubbles = !!opts.bubbles;
+  }
+};
+global.MouseEvent = class MouseEvent extends global.Event {};
+global.PointerEvent = class PointerEvent extends global.Event {};
+global.HTMLInputElement = {
+  prototype: {
+    get checked() { return this._checked; },
+    set checked(v) { this._checked = v; }
+  }
+};
+global.HTMLTextAreaElement = {
+  prototype: {
+    get value() { return this._val; },
+    set value(v) { this._val = v; }
+  }
+};
+
+function el(tag, className = "", attrs = {}, children = []) {
+  const node = new MockNode(tag);
+  node.className = className;
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "disabled") node.disabled = Boolean(v);
+    else if (k === "type") node.type = String(v);
+    else if (k === "value") node.value = String(v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (typeof c === "string") {
+      node.appendChild(new MockNode(c, true));
+    } else if (c) {
+      node.appendChild(c);
+    }
+  }
+  return node;
+}
+
+const doc = el("html", "", {}, [el("head"), el("body")]);
+global.document = doc;
+
+const extractor = require(path.resolve(process.cwd(), "extension/extractor.js"));
+const executor = require(path.resolve(process.cwd(), "extension/executor.js"));
+
+async function main() {
+  // Test 1: Real KaTeX DOM
+  const katexContainer = el("div", "katex", {}, [
+    el("span", "katex-mathml", {}, [
+      el("annotation", "", { encoding: "application/x-tex" }, ["\\frac{1}{6}"])
+    ]),
+    el("span", "katex-html", { "aria-hidden": "true" }, [
+      el("span", "base", {}, [
+        el("span", "mfrac", {}, [
+          el("span", "vlist-t", {}, [el("span", "mord", {}, ["1"])]),
+          el("span", "frac-line"),
+          el("span", "vlist-t", {}, [el("span", "mord", {}, ["6"])])
+        ])
+      ])
+    ])
+  ]);
+  const optionLabel = el("label", "option-item", {}, [
+    el("input", "", { type: "radio", name: "q1" }),
+    katexContainer
+  ]);
+
+  const cleanOptionText = extractor.getCleanVisibleText(optionLabel);
+  if (cleanOptionText !== "1/6") {
+    throw new Error(`Expected KaTeX option '1/6', got '${cleanOptionText}'`);
+  }
+
+  // Test 2: Tricky decimals, ratios, and fractions
+  const prefixCases = [
+    { in: "1/6", exp: "1/6" },
+    { in: "2/36", exp: "2/36" },
+    { in: "1.5", exp: "1.5" },
+    { in: "0.25", exp: "0.25" },
+    { in: "-1/6", exp: "-1/6" },
+    { in: "1:6", exp: "1:6" },
+    { in: "0", exp: "0" },
+    { in: "A", exp: "A" },
+    { in: "(A) 1/6", exp: "1/6" },
+    { in: "A. 1.5", exp: "1.5" },
+    { in: "1) 1:6", exp: "1:6" },
+    { in: "D - 0.25", exp: "0.25" }
+  ];
+  for (const tc of prefixCases) {
+    const res = extractor.stripDecorativePrefix(tc.in);
+    if (res !== tc.exp) {
+      throw new Error(`stripDecorativePrefix('${tc.in}') produced '${res}', expected '${tc.exp}'`);
+    }
+  }
+
+  // Test 3: Declarative Python code block & explanation exclusion
+  const quizCard = el("div", "quiz-card", {}, [
+    el("div", "question-stem", {}, [
+      el("p", "", {}, ["Consider the following Python code snippet. Select the correct output."]),
+      el("pre", "", {}, [
+        el("code", "", {}, ["def compute(x):\n    return x * 2\nprint(compute(5))"])
+      ])
+    ]),
+    el("div", "options-list", {}, [
+      el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " 10"]),
+      el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " 5"]),
+      el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " None"]),
+      el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " Error"])
+    ]),
+    el("div", "explanation-drawer", {}, [
+      el("h3", "", {}, ["EXPLANATION"]),
+      el("p", "", {}, ["The function multiplies 5 by 2 and returns 10."])
+    ])
+  ]);
+  doc.childNodes[1].childNodes = [];
+  doc.childNodes[1].appendChild(quizCard);
+
+  const quizResult = extractor.extractQuizFromDom();
+  if (!quizResult.question.includes("Consider the following Python code snippet")) {
+    throw new Error("Question prompt paragraph missing!");
+  }
+  if (!quizResult.question.includes("def compute(x):")) {
+    throw new Error("<pre><code> block code was not concatenated into question!");
+  }
+  if (quizResult.question.includes("EXPLANATION") || quizResult.question.includes("multiplies 5 by 2")) {
+    throw new Error("Post-submit explanation polluted the extracted question text!");
+  }
+  if (quizResult.options.length !== 4 || quizResult.options[0] !== "10") {
+    throw new Error(`Options mismatch: ${JSON.stringify(quizResult.options)}`);
+  }
+
+  // Test 4: Async two-step Submit -> 900ms delayed Next question button polling
+  const actionContainer = el("div", "actions", {}, [
+    el("button", "btn-submit", { type: "button" }, ["Submit"])
+  ]);
+  doc.childNodes[1].childNodes = [];
+  doc.childNodes[1].appendChild(actionContainer);
+
+  const submitBtn = actionContainer.querySelector("button");
+  submitBtn.addEventListener("click", () => {
+    setTimeout(() => {
+      const nextBtn = el("button", "btn-next", { type: "button" }, ["Next Question"]);
+      actionContainer.appendChild(nextBtn);
+    }, 900);
+  });
+
+  const nextResult = await executor.clickNextButton();
+  if (!nextResult.ok || !nextResult.success) {
+    throw new Error(`clickNextButton failed: ${JSON.stringify(nextResult)}`);
+  }
+  if (nextResult.step !== "submit_then_next") {
+    throw new Error(`Expected step 'submit_then_next', got '${nextResult.step}'`);
+  }
+  if (nextResult.waited_ms < 850) {
+    throw new Error(`Expected polling wait >= 850ms, got ${nextResult.waited_ms}ms`);
+  }
+
+  console.log("NODE_RUNTIME_TESTS_OK");
+}
+
+main().catch(err => {
+  console.error("NODE_RUNTIME_ERROR:", err.message);
+  process.exit(1);
+});
+"""
+
+    res = subprocess.run(
+        ["node", "-e", js_script],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False
+    )
+
+    if res.returncode != 0:
+        print("Node.js runtime test stdout:\n", res.stdout)
+        print("Node.js runtime test stderr:\n", res.stderr)
+        raise AssertionError(f"Node.js runtime live-site compatibility test failed with exit code {res.returncode}")
+
+    assert "NODE_RUNTIME_TESTS_OK" in res.stdout, "Missing success confirmation in Node.js runtime tests"
+    print("  -> Passed Node.js runtime verification: KaTeX \\frac{1}{6} normalized, 12 numeric variants preserved, code snippets concatenated without explanation pollution, and 900ms delayed Next polling verified.")
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("RUNNING LIVE-SITE COMPATIBILITY VERIFICATION SUITE")
@@ -183,7 +583,9 @@ if __name__ == "__main__":
     test_executor_two_step_flow()
     test_sidepanel_apply_once_and_telemetry()
     test_mock_quiz_react_math_scenario()
+    test_nodejs_runtime_verification()
 
     print("\n" + "=" * 70)
     print("ALL LIVE-SITE COMPATIBILITY TESTS PASSED (100% SUCCESS)")
     print("=" * 70)
+

@@ -55,16 +55,28 @@
       el.focus();
     } catch (e) {}
 
-    // Dispatch mouse events in realistic sequence
-    const events = ["mousedown", "mouseup", "click"];
-    events.forEach((type) => {
+    // Dispatch pointer and mouse events in realistic sequence
+    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+    eventTypes.forEach((type) => {
       try {
-        const ev = new MouseEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          buttons: 1
-        });
+        let ev;
+        if (type.startsWith("pointer") && typeof PointerEvent !== "undefined") {
+          ev = new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            buttons: 1,
+            pointerId: 1,
+            pointerType: "mouse"
+          });
+        } else {
+          ev = new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            buttons: 1
+          });
+        }
         el.dispatchEvent(ev);
       } catch (e) {}
     });
@@ -78,9 +90,6 @@
     return true;
   }
 
-  /**
-   * Finds option elements using custom selector or deterministic heuristics.
-   */
   /**
    * Finds option elements using custom selector or deterministic heuristics.
    */
@@ -135,6 +144,7 @@
 
   /**
    * Executes plain DOM click on targeted MCQ option.
+   * Handles React 16-18 controlled radio selection without corrupting _valueTracker.
    */
   function executeMcqAction(payload) {
     const targetIndex = payload.selected_index;
@@ -155,19 +165,48 @@
     }
 
     const targetEl = options[targetIndex];
+    const radio = targetEl.querySelector
+      ? (targetEl.querySelector("input[type='radio']") || (targetEl.tagName === "INPUT" && targetEl.type === "radio" ? targetEl : null))
+      : null;
 
-    // If target element contains or is a radio input, explicitly check it and dispatch events for React
-    const radio = targetEl.querySelector("input[type='radio']") || (targetEl.tagName === "INPUT" && targetEl.type === "radio" ? targetEl : null);
-    if (radio) {
-      radio.checked = true;
+    // 1. Dispatch realistic mouse interaction sequence on the label or interactive card FIRST
+    // CRITICAL: Do NOT pre-mutate radio.checked = true before click, which breaks React 16-18 _valueTracker!
+    const clickTarget = (targetEl.tagName === "INPUT" && targetEl.parentElement && targetEl.parentElement.tagName === "LABEL")
+      ? targetEl.parentElement
+      : targetEl;
+
+    const clicked = dispatchClick(clickTarget);
+    if (radio && radio !== clickTarget) {
       dispatchClick(radio);
-      try {
-        radio.dispatchEvent(new Event("change", { bubbles: true }));
-        radio.dispatchEvent(new Event("input", { bubbles: true }));
-      } catch (e) {}
     }
 
-    const clicked = dispatchClick(targetEl);
+    // 2. React 16-18 controlled radio fallback: only if radio is STILL not checked after click
+    if (radio && !radio.checked) {
+      try {
+        if (radio._valueTracker && typeof radio._valueTracker.setValue === "function") {
+          radio._valueTracker.setValue(false);
+        }
+      } catch (e) {}
+
+      try {
+        const proto = (typeof window !== "undefined" && window.HTMLInputElement)
+          ? window.HTMLInputElement.prototype
+          : null;
+        const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "checked") : null;
+        if (descriptor && descriptor.set) {
+          descriptor.set.call(radio, true);
+        } else {
+          radio.checked = true;
+        }
+      } catch (e) {
+        radio.checked = true;
+      }
+
+      try {
+        radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      } catch (e) {}
+    }
 
     return {
       success: clicked,
@@ -392,11 +431,11 @@
     const doc = (typeof document !== "undefined") ? document : null;
     if (!doc) return { success: false, error: "No document" };
 
-    // Ignore non-advance buttons like SHOW ANSWER, SKIP, END PRACTICE
+    // Ignore non-advance buttons like SHOW ANSWER, SKIP, END PRACTICE, HINT, PREVIOUS, BACK, REPORT
     function isIgnoredButton(btn) {
       if (!btn) return true;
       const t = cleanText(btn.innerText || btn.textContent || btn.value || btn.getAttribute("aria-label") || "").toLowerCase();
-      if (/^(?:show answer|skip|end practice|practice instructions|reset|cancel|hint|review)\b/i.test(t)) {
+      if (/^(?:show answer|skip|end practice|practice instructions|reset|cancel|hint|previous|prev|back|report|report an issue|review)\b/i.test(t)) {
         return true;
       }
       return false;
@@ -406,7 +445,7 @@
       if (!btn || isIgnoredButton(btn) || btn.disabled) return false;
       const t = cleanText(btn.innerText || btn.textContent || btn.value || btn.getAttribute("aria-label") || "").toLowerCase();
       if (/^(?:next|continue|advance|forward|next question)\b/i.test(t)) return true;
-      if (btn.matches && (btn.matches("[data-quiz-next]") || btn.matches(".btn-next") || btn.matches(".next-btn"))) return true;
+      if (btn.matches && (btn.matches("[data-quiz-next]") || btn.matches(".btn-next") || btn.matches(".next-btn") || btn.matches(".quiz-next") || btn.matches(".next-button"))) return true;
       return false;
     }
 
@@ -418,97 +457,128 @@
       return false;
     }
 
-    let nextBtn = null;
-
-    // 1. Check custom selector if provided
-    if (customNextSelector) {
-      const el = doc.querySelector(customNextSelector);
-      if (el && isVisible(el) && !el.disabled) {
-        nextBtn = el;
+    function findReadyNext(customSelector) {
+      if (customSelector) {
+        try {
+          const el = doc.querySelector(customSelector);
+          if (el && isVisible(el) && !el.disabled && !isIgnoredButton(el)) {
+            return el;
+          }
+        } catch (e) {}
       }
-    }
 
-    // 2. Deterministic Heuristics & Two-Step Submit -> Next Flow
-    if (!nextBtn) {
       const allButtons = Array.from(doc.querySelectorAll(
         "button, a.btn, [role='button'], input[type='button'], input[type='submit']"
       )).filter(isVisible);
 
-      // (A) Check if a NEXT button is ALREADY visible and enabled
-      const readyNext = allButtons.find(isNextCandidate);
-      if (readyNext) {
-        const clicked = dispatchClick(readyNext);
-        return {
-          success: clicked,
-          action: "next_button_clicked",
-          button_text: cleanText(readyNext.innerText || readyNext.textContent || readyNext.value)
-        };
-      }
+      const candidate = allButtons.find(isNextCandidate);
+      if (candidate) return candidate;
 
-      // (B) If not, check if a SUBMIT button is present (two-step submit -> next)
-      const submitBtn = allButtons.find(isSubmitCandidate);
-      if (submitBtn) {
-        const submitText = cleanText(submitBtn.innerText || submitBtn.textContent || submitBtn.value || "Submit");
-        dispatchClick(submitBtn);
-
-        // Wait ~500 ms for React / DOM to lock answer and render/enable NEXT button
-        await new Promise((resolve) => setTimeout(resolve, 500));
-
-        // Re-query buttons to locate the newly enabled or rendered NEXT button
-        const postButtons = Array.from(doc.querySelectorAll(
-          "button, a.btn, [role='button'], input[type='button'], input[type='submit']"
-        )).filter(isVisible);
-
-        const postNext = postButtons.find(isNextCandidate);
-        if (postNext) {
-          const nextClicked = dispatchClick(postNext);
-          return {
-            success: nextClicked,
-            action: "submit_then_next_clicked",
-            button_text: `${submitText} -> ${cleanText(postNext.innerText || postNext.textContent || postNext.value)}`
-          };
-        }
-
-        // Submit clicked successfully even if next button wasn't immediately revealed
-        return {
-          success: true,
-          action: "submit_clicked",
-          button_text: submitText
-        };
-      }
-
-      // (C) Fallback Heuristics
       const nextHeuristics = [
         "[data-quiz-next]",
         "#next-question",
         ".btn-next",
         ".next-btn",
         "button.quiz-next",
-        "button.next-button",
-        "input[type='submit']",
-        "button[type='submit']"
+        "button.next-button"
       ];
       for (const sel of nextHeuristics) {
-        const el = doc.querySelector(sel);
-        if (el && isVisible(el) && !el.disabled && !isIgnoredButton(el)) {
-          nextBtn = el;
-          break;
-        }
+        try {
+          const el = doc.querySelector(sel);
+          if (el && isVisible(el) && !el.disabled && !isIgnoredButton(el)) {
+            return el;
+          }
+        } catch (e) {}
       }
+      return null;
     }
 
-    if (!nextBtn) {
+    // (A) Check if NEXT button is ALREADY visible and enabled
+    const directNext = findReadyNext(customNextSelector);
+    if (directNext) {
+      const clicked = dispatchClick(directNext);
+      const btnText = cleanText(directNext.innerText || directNext.textContent || directNext.value || "Next");
       return {
-        success: false,
-        error: "Next / Continue button not found. Please specify 'Next Button Selector' in Settings."
+        ok: clicked,
+        success: clicked,
+        step: "next_direct",
+        action: "next_button_clicked",
+        button_text: btnText
       };
     }
 
-    const clicked = dispatchClick(nextBtn);
+    // (B) If not, check if a SUBMIT button is present (two-step submit -> next)
+    const allButtons = Array.from(doc.querySelectorAll(
+      "button, a.btn, [role='button'], input[type='button'], input[type='submit']"
+    )).filter(isVisible);
+
+    const submitBtn = allButtons.find(isSubmitCandidate);
+    if (submitBtn) {
+      const submitText = cleanText(submitBtn.innerText || submitBtn.textContent || submitBtn.value || "Submit");
+      dispatchClick(submitBtn);
+
+      // Deterministic polling: check every 120ms up to 4500ms for NEXT button to appear/enable
+      const pollIntervalMs = 120;
+      const maxWaitMs = 4500;
+      let waitedMs = 0;
+      let postNext = null;
+
+      while (waitedMs < maxWaitMs) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        waitedMs += pollIntervalMs;
+
+        postNext = findReadyNext(customNextSelector);
+        if (postNext) {
+          break;
+        }
+      }
+
+      if (postNext) {
+        const nextClicked = dispatchClick(postNext);
+        const nextText = cleanText(postNext.innerText || postNext.textContent || postNext.value || "Next Question");
+        return {
+          ok: nextClicked,
+          success: nextClicked,
+          step: "submit_then_next",
+          action: "submit_then_next_clicked",
+          button_text: `${submitText} -> ${nextText}`,
+          waited_ms: waitedMs
+        };
+      }
+
+      // If no NEXT button rendered after submit within maxWaitMs, check if quiz completed
+      const bodyText = doc.body ? (doc.body.innerText || doc.body.textContent || "") : "";
+      const isCompleted = /(?:questions?\s*attempted\s*:\s*(\d+)\s*\/\s*\1|quiz\s*completed|practice\s*completed|all\s*questions?\s*(?:attempted|answered))/i.test(bodyText);
+
+      return {
+        ok: true,
+        success: true,
+        step: isCompleted ? "quiz_completed" : "submit_only",
+        action: isCompleted ? "quiz_completed" : "submit_clicked",
+        button_text: submitText,
+        waited_ms: waitedMs,
+        reason: isCompleted
+          ? "Quiz completed (all questions attempted or completion banner detected)."
+          : "Submit clicked, but no Next button appeared within 4500ms."
+      };
+    }
+
+    // (C) If neither Next nor Submit found, check if quiz is already completed
+    const bodyText = doc.body ? (doc.body.innerText || doc.body.textContent || "") : "";
+    if (/(?:questions?\s*attempted\s*:\s*(\d+)\s*\/\s*\1|quiz\s*completed|practice\s*completed)/i.test(bodyText)) {
+      return {
+        ok: true,
+        success: true,
+        step: "quiz_completed",
+        action: "quiz_completed",
+        reason: "Quiz completion detected."
+      };
+    }
+
     return {
-      success: clicked,
-      action: "next_button_clicked",
-      button_text: cleanText(nextBtn.innerText || nextBtn.textContent || nextBtn.value)
+      ok: false,
+      success: false,
+      error: "Next / Continue button not found. Please specify 'Next Button Selector' in Settings."
     };
   }
 

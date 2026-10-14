@@ -22,15 +22,88 @@
   }
 
   /**
+   * Normalizes common LaTeX mathematical notation into clean readable ASCII.
+   * e.g. \frac{1}{6} -> 1/6, \times -> *, x^{2} -> x^2, \pm -> +/-
+   */
+  function normalizeTeX(tex) {
+    if (!tex) return "";
+    let s = String(tex).trim();
+
+    // 1. Convert \frac{a}{b} and \dfrac{a}{b} -> a/b
+    let prev;
+    do {
+      prev = s;
+      s = s.replace(/\\d?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, "($1)/($2)");
+      s = s.replace(/\\d?frac\s*([0-9a-zA-Z])\s*([0-9a-zA-Z])/g, "$1/$2");
+    } while (s !== prev);
+
+    // Clean up unnecessary parentheses around single terms in fractions, e.g. (1)/(6) -> 1/6
+    s = s.replace(/\(([0-9a-zA-Z]+)\)\/\(([0-9a-zA-Z]+)\)/g, "$1/$2");
+    s = s.replace(/\(([0-9a-zA-Z]+)\)\/([0-9a-zA-Z]+)/g, "$1/$2");
+    s = s.replace(/([0-9a-zA-Z]+)\/\(([0-9a-zA-Z]+)\)/g, "$1/$2");
+
+    // 2. Common operators & symbols
+    s = s.replace(/\\times\b/g, " * ")
+         .replace(/\\cdot\b/g, " * ")
+         .replace(/\\div\b/g, " / ")
+         .replace(/\\pm\b/g, " +/- ")
+         .replace(/\\mp\b/g, " -/+ ")
+         .replace(/\\neq\b/g, " != ")
+         .replace(/\\leq\b/g, " <= ")
+         .replace(/\\geq\b/g, " >= ")
+         .replace(/\\approx\b/g, " approx ")
+         .replace(/\\infty\b/g, " infinity ")
+         .replace(/\\pi\b/g, " pi ")
+         .replace(/\\sqrt\s*\{([^{}]+)\}/g, "sqrt($1)")
+         .replace(/\\sqrt\s*([0-9a-zA-Z])/g, "sqrt($1)");
+
+    // 3. Superscripts and subscripts: ^{n} -> ^n, _{n} -> _n
+    s = s.replace(/\^\{([^{}]+)\}/g, "^$1")
+         .replace(/\_\{([^{}]+)\}/g, "_$1");
+
+    // 4. Formatting commands: \text{...}, \mathbf{...}, \mathit{...}, \mathrm{...}
+    s = s.replace(/\\(?:text|mathbf|mathit|mathrm|mathbb|mathcal)\s*\{([^{}]+)\}/g, "$1");
+
+    // 5. Clean delimiters: \left, \right
+    s = s.replace(/\\(?:left|right)\b/g, "");
+
+    // 6. Clean escaped symbols: \% -> %, \$ -> $, \_ -> _
+    s = s.replace(/\\([%$&_#{}\\])/g, "$1");
+
+    // 7. Strip remaining TeX command words, remove leftover braces, collapse spaces
+    s = s.replace(/\\[a-zA-Z]+/g, " ")
+         .replace(/[\{\}]/g, "")
+         .replace(/\s+/g, " ")
+         .trim();
+
+    return s;
+  }
+
+  /**
    * Strips decorative leading bullets/letters (e.g. 'A.', '1)', '(a)')
-   * from option blocks to ensure clean text normalization without breaking
-   * math fractions such as '1/6' or '2/36'.
+   * while strictly preserving decimals ('1.5'), ratios ('1:6'), fractions ('1/6', '2/36'),
+   * negatives ('-1/6'), and single character options ('0', 'A').
    */
   function stripDecorativePrefix(text) {
     if (!text) return "";
-    return text
-      .replace(/^(?:[A-Za-z][\.\)\:\-]\s*|\([A-Za-z0-9]\)\s*|[0-9]+[\.\)\:\-]\s*|[\u2022\u25E6\u25AA\u2023]\s*)/, "")
-      .trim();
+    let s = String(text).trim();
+
+    // 1. Parenthesized prefix: (A) 1/6, (1) text, (iv) option
+    s = s.replace(/^\(\s*[A-Za-z0-9]{1,3}\s*\)\s+/, "");
+
+    // 2. Letter prefix followed by . or ) or : or - and whitespace: 'A. foo', 'b) bar', 'C - baz', 'D: qux'
+    // Requires trailing whitespace (\s+) so 'A.B' or single letter 'A' is preserved
+    s = s.replace(/^[A-Za-z]\s*[\.\)\:\-]\s+/, "");
+
+    // 3. Digit prefix 1-999 followed by . or ) or - and whitespace:
+    // CRITICAL: NEVER match if followed by a digit (preserves '1.5' -> '1.5')
+    // and NEVER use ':' as prefix delimiter for numbers (preserves '1:6' -> '1:6')
+    s = s.replace(/^[0-9]{1,3}\s*(?:\)|-(?!\d)|\.(?!\d))\s+/, "");
+
+    // 4. Bullet symbols followed by whitespace
+    s = s.replace(/^[\u2022\u25E6\u25AA\u2023]\s+/, "");
+
+    return s.trim();
   }
 
   /**
@@ -54,8 +127,8 @@
 
   /**
    * Math-Safe Text Reader:
-   * Extracts clean visible text while ignoring assistive MathML/TeX duplication
-   * and hidden screen-reader elements (ZERO DOM MUTATION).
+   * Extracts clean visible text while reading raw TeX from KaTeX/MathJax annotations
+   * or normalizing KaTeX visual HTML fallback, ignoring hidden/duplicate elements (ZERO DOM MUTATION).
    */
   function getCleanVisibleText(el) {
     if (!el) return "";
@@ -74,8 +147,52 @@
         return "";
       }
 
-      // Filter out KaTeX/MathJax duplicate assistive MathML or TeX annotations
-      const cls = typeof node.className === "string" ? node.className : (node.getAttribute("class") || "");
+      // Check inline display:none or visibility:hidden
+      const styleAttr = (node.getAttribute && node.getAttribute("style")) || "";
+      if (/display\s*:\s*none|visibility\s*:\s*hidden/i.test(styleAttr)) {
+        return "";
+      }
+      if (node.hasAttribute && node.hasAttribute("hidden")) {
+        return "";
+      }
+
+      const cls = typeof node.className === "string" ? node.className : ((node.getAttribute && node.getAttribute("class")) || "");
+
+      // Check for KaTeX or MathJax container
+      const isKatexContainer = cls.includes("katex") && !cls.includes("katex-html") && !cls.includes("katex-mathml");
+      const isMathJaxContainer = tag === "mjx-container" || cls.includes("MathJax") || tag === "math";
+
+      if (isKatexContainer || isMathJaxContainer) {
+        // 1. Look for <annotation encoding="application/x-tex">, <annotation>, data-latex, or alttext
+        const annotation = node.querySelector ? node.querySelector("annotation[encoding*='tex'], annotation") : null;
+        let rawTex = annotation ? (annotation.textContent || annotation.innerText) : null;
+
+        if (!rawTex && node.getAttribute) {
+          rawTex = node.getAttribute("data-latex") || node.getAttribute("alttext") || node.getAttribute("aria-label");
+        }
+
+        if (rawTex && rawTex.trim()) {
+          return " " + normalizeTeX(rawTex) + " ";
+        }
+
+        // 2. Fallback: inspect .katex-html structure for .mfrac / .frac-line
+        const katexHtml = node.querySelector ? node.querySelector(".katex-html") : (cls.includes("katex-html") ? node : null);
+        if (katexHtml) {
+          const mfrac = katexHtml.querySelector ? katexHtml.querySelector(".mfrac") : null;
+          if (mfrac) {
+            const vlists = mfrac.querySelectorAll(".vlist > span");
+            if (vlists.length >= 2) {
+              const numText = cleanText(vlists[0].textContent || "");
+              const denText = cleanText(vlists[vlists.length - 1].textContent || "");
+              if (numText && denText) {
+                return " " + numText + "/" + denText + " ";
+              }
+            }
+          }
+        }
+      }
+
+      // Filter out KaTeX/MathJax duplicate assistive MathML or TeX annotations if encountered standalone
       if (
         cls.includes("katex-mathml") ||
         cls.includes("MJX_Assistive_MathML") ||
@@ -87,18 +204,9 @@
         return "";
       }
 
-      // Check inline display:none or visibility:hidden
-      const styleAttr = node.getAttribute("style") || "";
-      if (/display\s*:\s*none|visibility\s*:\s*hidden/i.test(styleAttr)) {
-        return "";
-      }
-      if (node.hasAttribute("hidden")) {
-        return "";
-      }
-
       // KaTeX puts aria-hidden="true" on .katex-html, but that is the real visual math we want!
-      const ariaHidden = node.getAttribute("aria-hidden");
-      if (ariaHidden === "true" && !cls.includes("katex-html") && !node.closest(".katex-html")) {
+      const ariaHidden = node.getAttribute ? node.getAttribute("aria-hidden") : null;
+      if (ariaHidden === "true" && !cls.includes("katex-html") && !(node.closest && node.closest(".katex-html"))) {
         if (tag === "svg" || tag === "i" || tag === "img" || cls.includes("icon")) {
           return "";
         }
@@ -109,9 +217,26 @@
         return "";
       }
 
+      // In KaTeX HTML fallback, if we encounter .msupsub, handle superscript/subscript prefix
+      if (cls.includes("msupsub")) {
+        const vlist = node.querySelector ? node.querySelector(".vlist") : null;
+        if (vlist) {
+          const text = cleanText(vlist.textContent || "");
+          if (text) {
+            return "^" + text;
+          }
+        }
+      }
+
       let text = "";
-      for (let child = node.firstChild; child; child = child.nextSibling) {
-        text += walk(child);
+      if (node.childNodes && node.childNodes.length > 0) {
+        for (let i = 0; i < node.childNodes.length; i++) {
+          text += walk(node.childNodes[i]);
+        }
+      } else {
+        for (let child = node.firstChild; child; child = child.nextSibling) {
+          text += walk(child);
+        }
       }
       return text;
     }
@@ -120,15 +245,42 @@
   }
 
   /**
-   * Identifies non-question header or navigation strings to prevent false positives.
+   * Identifies non-question header, navigation, button, or explanation strings to prevent false positives.
    */
   function isHeaderOrNavText(text) {
     if (!text) return true;
     const t = text.trim();
-    if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|show\s*answer|skip|submit|next|previous)/i.test(t)) {
+
+    // Top-bar navigation, controls, scores, instructions
+    if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|show\s*answer|skip|submit|next|previous|back|continue|report(?:\s*an)?\s*issue)/i.test(t)) {
       return true;
     }
+
+    // Post-submit explanation or feedback title headers
+    if (t.length <= 40 && /^(?:explanation|solution|correct\s*answer|your\s*answer|detailed\s*solution|answer\s*key|hint|review(?:\s*questions)?)/i.test(t)) {
+      return true;
+    }
+
+    // Numbering artifacts like "Question 1 of 15" or "Q1."
     if (/^(?:question\s*\d+\s*(?:of|\/)\s*\d+|q\s*\d+[\.\:\s]*)$/i.test(t)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Checks if an element is part of a post-submit explanation or feedback container.
+   */
+  function isExplanationOrFeedback(el) {
+    if (!el) return false;
+    const cls = typeof el.className === "string" ? el.className.toLowerCase() : ((el.getAttribute && el.getAttribute("class")) || "").toLowerCase();
+    const id = typeof el.id === "string" ? el.id.toLowerCase() : ((el.getAttribute && el.getAttribute("id")) || "").toLowerCase();
+    if (/explanation|solution|feedback|correct-answer|answer-key|hint-drawer|review-box/.test(cls + " " + id)) {
+      return true;
+    }
+    const heading = el.querySelector ? el.querySelector("h1, h2, h3, h4, h5, h6, strong, .title") : null;
+    if (heading && isHeaderOrNavText(heading.textContent || heading.innerText || "")) {
       return true;
     }
     return false;
@@ -196,7 +348,7 @@
       }
     }
 
-    // 2. EXTRACT QUESTION TEXT
+    // 2. EXTRACT QUESTION TEXT (Supports multi-block, code snippets, declarative prompts, ignores explanations)
     let question = "";
     if (custom.questionSelector) {
       const el = doc.querySelector(custom.questionSelector);
@@ -205,6 +357,50 @@
         matchedSelectors.question = custom.questionSelector;
       }
     }
+
+    // React card search: search question containers for multi-block stems (prompts + <pre><code>)
+    if (!question) {
+      const cardContainers = Array.from(doc.querySelectorAll(
+        "[class*='question-card'], [class*='questionCard'], [class*='questionContainer'], [class*='question-container'], [class*='quiz-card'], [class*='quizCard'], [class*='quiz-container'], [class*='quizContainer'], [class*='practice-card'], [class*='problem-card'], [class*='mcq-card'], [class*='card'], .card, main, [role='main'], form"
+      )).filter(isVisible);
+
+      for (const card of cardContainers) {
+        if (isExplanationOrFeedback(card)) continue;
+
+        const stemElements = Array.from(card.querySelectorAll("p, pre, code, table, h2, h3, h4, [class*='question']")).filter(isVisible);
+        const stemParts = [];
+
+        for (const el of stemElements) {
+          // Avoid elements inside option lists, radio groups, buttons, top-bars, or explanation drawers
+          if (el.closest && (el.closest("[class*='option'], [class*='choice'], [class*='radio'], label, button, .react-top-bar, footer") || isExplanationOrFeedback(el))) {
+            continue;
+          }
+          if (el.querySelector && el.querySelector("input[type='radio'], [role='radio'], [class*='option']")) {
+            continue;
+          }
+
+          const tag = el.tagName.toLowerCase();
+          if (tag === "pre" || tag === "code") {
+            const codeText = (el.textContent || el.innerText || "").trim();
+            if (codeText && !stemParts.includes(codeText)) {
+              stemParts.push(codeText);
+            }
+          } else {
+            const txt = getCleanVisibleText(el);
+            if (txt.length >= 10 && !isHeaderOrNavText(txt) && !stemParts.some(p => p.includes(txt))) {
+              stemParts.push(txt);
+            }
+          }
+        }
+
+        if (stemParts.length > 0) {
+          question = stemParts.join("\n\n").trim();
+          matchedSelectors.question = "card-stem-multiblock";
+          break;
+        }
+      }
+    }
+
     if (!question) {
       const questionHeuristics = [
         "[data-quiz-question]",
@@ -213,6 +409,9 @@
         ".question-title",
         "#question-text",
         "[role='heading'].question",
+        "[class*='question-stem']",
+        "[class*='questionStem']",
+        "[class*='question-body']",
         "[class*='question-text']",
         "[class*='questionText']",
         "[class*='question_text']",
@@ -225,10 +424,16 @@
       ];
       for (const sel of questionHeuristics) {
         const el = doc.querySelector(sel);
-        if (el && isVisible(el)) {
+        if (el && isVisible(el) && !isExplanationOrFeedback(el)) {
           const txt = getCleanVisibleText(el);
           if (txt.length >= 8 && !isHeaderOrNavText(txt)) {
-            question = txt;
+            const nextEl = el.nextElementSibling;
+            if (nextEl && (nextEl.tagName.toLowerCase() === "pre" || nextEl.tagName.toLowerCase() === "code")) {
+              const codeTxt = (nextEl.textContent || nextEl.innerText || "").trim();
+              question = txt + "\n\n" + codeTxt;
+            } else {
+              question = txt;
+            }
             matchedSelectors.question = sel;
             break;
           }
@@ -236,36 +441,11 @@
       }
     }
 
-    // React card fallback: search within question container/card for problem statement
-    if (!question) {
-      const cardContainers = Array.from(doc.querySelectorAll(
-        "[class*='question-card'], [class*='questionCard'], [class*='questionContainer'], [class*='question-container'], [class*='practice-card'], [class*='problem-card'], .card, main, [role='main'], form"
-      )).filter(isVisible);
-
-      for (const card of cardContainers) {
-        const paragraphs = Array.from(card.querySelectorAll("p, div, h2, h3, h4, span")).filter(isVisible);
-        for (const p of paragraphs) {
-          // Avoid container if it contains radio option elements
-          if (p.querySelector("input[type='radio'], [role='radio'], [class*='option']")) {
-            continue;
-          }
-          const txt = getCleanVisibleText(p);
-          if (txt.length >= 15 && !isHeaderOrNavText(txt)) {
-            if (txt.includes("?") || /\b(?:probability|calculate|what is|which of the following|find|how many|determine|arrange|order|solve)\b/i.test(txt)) {
-              question = txt;
-              matchedSelectors.question = "react-card-paragraph";
-              break;
-            }
-          }
-        }
-        if (question) break;
-      }
-    }
-
     // Secondary fallback for question if still empty: search headings
     if (!question) {
       const headings = Array.from(doc.querySelectorAll("h1, h2, h3, h4, [role='heading']")).filter(isVisible);
       for (const h of headings) {
+        if (isExplanationOrFeedback(h)) continue;
         const txt = getCleanVisibleText(h);
         if (txt.length >= 12 && !isHeaderOrNavText(txt) && !/quiz|test|exam|instructions/i.test(txt)) {
           question = txt;

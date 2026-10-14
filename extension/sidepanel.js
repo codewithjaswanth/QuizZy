@@ -1090,8 +1090,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
               }
 
+              if (nextRes.step === "quiz_completed" || nextRes.action === "quiz_completed") {
+                isAutoRunning = false;
+                setTelemetryState("COMPLETED", `[Step ${autoStepIndex}] Quiz completed! All questions answered.`);
+                if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
+                if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+                return;
+              }
+
               // Advanced to next question, wait brief transition time then loop
-              const advanceDesc = nextRes.button_text ? ` (${nextRes.button_text})` : "";
+              const waitSuffix = nextRes.waited_ms ? ` [waited ${nextRes.waited_ms}ms]` : "";
+              const advanceDesc = nextRes.button_text ? ` (${nextRes.button_text}${waitSuffix})` : "";
               setTelemetryState("RUNNING", `[Step ${autoStepIndex}] Advanced to next question${advanceDesc}. Transitioning...`);
               setTimeout(() => {
                 runNextAutoStep();
@@ -1118,6 +1127,13 @@ document.addEventListener("DOMContentLoaded", () => {
         customNextSelector: nextSelector
       }, (nextRes) => {
         if (!isAutoRunning || killSwitchTriggered) return;
+        if (nextRes && (nextRes.step === "quiz_completed" || nextRes.action === "quiz_completed")) {
+          isAutoRunning = false;
+          setTelemetryState("COMPLETED", `[Step ${autoStepIndex}] Quiz completed! All questions answered.`);
+          if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
+          if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+          return;
+        }
         setTimeout(() => {
           runNextAutoStep();
         }, 600);
