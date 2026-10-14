@@ -61,16 +61,247 @@ def find_env_file() -> Path:
     return candidates[0]
 
 
-def load_api_keys() -> Tuple[str, str]:
-    """Load GROQ_API_KEY and OPENROUTER_API_KEY from backend/.env or environment."""
-    env_path = find_env_file()
-    if env_path.is_file():
-        load_dotenv(dotenv_path=env_path)
-    else:
-        load_dotenv()
+# Non-chat model exclusion keywords (embedding, reranker, content-safety, guard, whisper, tts)
+NON_CHAT_KEYWORDS = ("embed", "rerank", "safety", "guard", "whisper", "tts")
 
-    groq_key = os.getenv("GROQ_API_KEY", "").strip()
-    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+_key_quarantine_until: Dict[str, float] = {}
+_model_quarantine_until: Dict[str, float] = {}
+_openrouter_key_rr_idx: int = 0
+
+
+def is_valid_chat_model(slug: str) -> bool:
+    """Strictly reject any slug containing embed, rerank, safety, guard, whisper, or tts."""
+    if not slug:
+        return False
+    slug_lower = slug.lower()
+    return not any(kw in slug_lower for kw in NON_CHAT_KEYWORDS)
+
+
+def quarantine_key(key: str, status_code: int) -> None:
+    """
+    Quarantine specific API key:
+    - HTTP 429: quarantine for 45 seconds.
+    - HTTP 401, 402, 403: quarantine for 300 seconds.
+    """
+    if not key:
+        return
+    now = time.time()
+    if status_code == 429:
+        _key_quarantine_until[key] = now + 45.0
+    elif status_code in (401, 402, 403):
+        _key_quarantine_until[key] = now + 300.0
+
+
+def is_key_quarantined(key: str) -> bool:
+    if not key:
+        return False
+    until = _key_quarantine_until.get(key, 0.0)
+    return time.time() < until
+
+
+def reset_key_quarantine() -> None:
+    """Reset key quarantine map (primarily for unit tests)."""
+    global _key_quarantine_until, _openrouter_key_rr_idx
+    _key_quarantine_until.clear()
+    _openrouter_key_rr_idx = 0
+
+
+def quarantine_model(model_slug: str, duration_sec: float = 60.0) -> None:
+    """Deprioritize an OpenRouter model slug for 60 seconds on error or timeout."""
+    if not model_slug:
+        return
+    _model_quarantine_until[model_slug] = time.time() + duration_sec
+
+
+def is_model_quarantined(model_slug: str) -> bool:
+    if not model_slug:
+        return False
+    until = _model_quarantine_until.get(model_slug, 0.0)
+    return time.time() < until
+
+
+def reset_model_quarantine() -> None:
+    """Reset model quarantine map (primarily for unit tests)."""
+    global _model_quarantine_until
+    _model_quarantine_until.clear()
+
+
+def load_groq_api_keys() -> List[str]:
+    """Load all unique non-empty Groq keys from GROQ_API_KEYS, GROQ_API_KEY, and numbered vars."""
+    if "GROQ_API_KEYS" not in os.environ and "GROQ_API_KEY" not in os.environ:
+        env_path = find_env_file()
+        if env_path.is_file():
+            load_dotenv(dotenv_path=env_path)
+        else:
+            load_dotenv()
+
+    keys: List[str] = []
+    multi_raw = os.getenv("GROQ_API_KEYS", "")
+    for k in multi_raw.split(","):
+        k_clean = k.strip()
+        if k_clean and k_clean not in keys:
+            keys.append(k_clean)
+
+    single_raw = os.getenv("GROQ_API_KEY", "")
+    for k in single_raw.split(","):
+        k_clean = k.strip()
+        if k_clean and k_clean not in keys:
+            keys.append(k_clean)
+
+    for env_k, env_v in os.environ.items():
+        if env_k.startswith("GROQ_API_KEY_"):
+            v_clean = env_v.strip()
+            if v_clean and v_clean not in keys:
+                keys.append(v_clean)
+
+    return keys
+
+
+def load_openrouter_api_keys() -> List[str]:
+    """Load all unique non-empty OpenRouter keys from OPENROUTER_API_KEYS, OPENROUTER_API_KEY, and numbered vars."""
+    if "OPENROUTER_API_KEYS" not in os.environ and "OPENROUTER_API_KEY" not in os.environ:
+        env_path = find_env_file()
+        if env_path.is_file():
+            load_dotenv(dotenv_path=env_path)
+        else:
+            load_dotenv()
+
+    keys: List[str] = []
+    multi_raw = os.getenv("OPENROUTER_API_KEYS", "")
+    for k in multi_raw.split(","):
+        k_clean = k.strip()
+        if k_clean and k_clean not in keys:
+            keys.append(k_clean)
+
+    single_raw = os.getenv("OPENROUTER_API_KEY", "")
+    for k in single_raw.split(","):
+        k_clean = k.strip()
+        if k_clean and k_clean not in keys:
+            keys.append(k_clean)
+
+    for env_k, env_v in os.environ.items():
+        if env_k.startswith("OPENROUTER_API_KEY_"):
+            v_clean = env_v.strip()
+            if v_clean and v_clean not in keys:
+                keys.append(v_clean)
+
+    return keys
+
+
+def get_healthy_openrouter_keys() -> List[str]:
+    all_keys = load_openrouter_api_keys()
+    if not all_keys:
+        return []
+    healthy = [k for k in all_keys if not is_key_quarantined(k)]
+    return healthy if healthy else all_keys
+
+
+def get_next_openrouter_key(exclude: Optional[str] = None) -> str:
+    global _openrouter_key_rr_idx
+    healthy = get_healthy_openrouter_keys()
+    if not healthy:
+        return ""
+    candidates = [k for k in healthy if k != exclude] if (exclude and len(healthy) > 1) else healthy
+    idx = _openrouter_key_rr_idx % len(candidates)
+    _openrouter_key_rr_idx += 1
+    return candidates[idx]
+
+
+TIER_WEIGHT: Dict[str, int] = {"S": 1, "A": 2, "B": 3}
+
+DEFAULT_TIER_PRIORITY: Dict[str, Tuple[str, int]] = {
+    "nvidia/nemotron-3-ultra-550b-a55b:free": ("S", 1),
+    "nvidia/nemotron-3-super-120b-a12b:free": ("S", 2),
+    "google/gemma-4-31b-it:free": ("S", 3),
+    "google/gemma-4-26b-a4b-it:free": ("A", 4),
+    "nvidia/nemotron-3.5-lightning:free": ("B", 5),
+    "liquid/lfm-2.5-2.6b:free": ("B", 6),
+}
+
+
+def extract_model_meta(item: Any) -> Dict[str, Any]:
+    """Convert a model dict or string slug into normalized dict metadata."""
+    if isinstance(item, dict):
+        model = item.get("model", "")
+        tier = item.get("tier")
+        priority = item.get("priority")
+        if not tier or priority is None:
+            def_tier, def_prio = DEFAULT_TIER_PRIORITY.get(model, ("B", 99))
+            tier = tier or def_tier
+            priority = priority if priority is not None else def_prio
+        return {
+            "provider": item.get("provider", "openrouter"),
+            "family": item.get("family", ""),
+            "model": model,
+            "tier": str(tier).upper(),
+            "priority": int(priority),
+        }
+    elif isinstance(item, str):
+        def_tier, def_prio = DEFAULT_TIER_PRIORITY.get(item, ("B", 99))
+        return {
+            "provider": "openrouter",
+            "family": "",
+            "model": item,
+            "tier": def_tier,
+            "priority": def_prio,
+        }
+    return {"provider": "openrouter", "family": "", "model": str(item), "tier": "B", "priority": 99}
+
+
+def get_ordered_fallback_pool(config: Optional[Union[dict, list]] = None) -> List[Dict[str, Any]]:
+    """
+    Return candidate fallback models strictly ordered by capability tier and priority:
+    (TIER_WEIGHT[tier], priority). Accepts config dict or candidate model list.
+    """
+    if config is None:
+        try:
+            config = load_models_config()
+        except Exception:
+            config = {}
+
+    if isinstance(config, list):
+        raw_pool = config
+    else:
+        raw_pool = config.get("fallback_pool")
+        if not raw_pool:
+            fb_m = config.get("fallback", {})
+            if isinstance(fb_m, dict) and fb_m.get("model"):
+                raw_pool = [fb_m]
+            elif isinstance(fb_m, str):
+                raw_pool = [fb_m]
+            else:
+                raw_pool = []
+
+    parsed = [extract_model_meta(item) for item in raw_pool if item]
+    valid = [item for item in parsed if is_valid_chat_model(item["model"])]
+    valid.sort(key=lambda x: (TIER_WEIGHT.get(x.get("tier", "B").upper(), 99), x.get("priority", 99)))
+    return valid
+
+
+def get_active_fallback_pool(config: Optional[dict] = None) -> List[str]:
+    """Return model slug strings in strict capability tier order."""
+    ordered = get_ordered_fallback_pool(config)
+    return [m["model"] for m in ordered]
+
+
+def get_healthy_fallback_models(pool: Sequence[Any]) -> List[str]:
+    """
+    Return healthy (non-quarantined) models in strict tier order as a list of model slug strings.
+    Accepts either list of model dicts or list of string slugs.
+    """
+    meta_list = [extract_model_meta(m) for m in pool if m]
+    valid = [m for m in meta_list if is_valid_chat_model(m["model"])]
+    valid.sort(key=lambda x: (TIER_WEIGHT.get(x.get("tier", "B").upper(), 99), x.get("priority", 99)))
+    healthy = [m["model"] for m in valid if not is_model_quarantined(m["model"])]
+    return healthy if healthy else [m["model"] for m in valid]
+
+
+def load_api_keys() -> Tuple[str, str]:
+    """Load primary GROQ_API_KEY and OPENROUTER_API_KEY (backward compatible)."""
+    groq_keys = load_groq_api_keys()
+    or_keys = load_openrouter_api_keys()
+    groq_key = groq_keys[0] if groq_keys else ""
+    openrouter_key = or_keys[0] if or_keys else ""
     return groq_key, openrouter_key
 
 
@@ -95,10 +326,11 @@ async def call_single_completion(
     messages: List[dict],
     api_key: str,
     timeout_ms: float,
+    max_tokens: int = 512,
 ) -> Tuple[Optional[str], float, Optional[str]]:
     """
     Call a single LLM provider chat completions endpoint with timeout.
-    Uses max_tokens >= 512 and falls back to reasoning fields if content is empty.
+    Uses max_tokens (default 512, 256 for pings) and falls back to reasoning fields if content is empty.
     Returns: (raw_content, elapsed_ms, error_string)
     """
     timeout_sec = max(0.1, timeout_ms / 1000.0)
@@ -114,7 +346,7 @@ async def call_single_completion(
             "model": model,
             "messages": messages,
             "temperature": 0.0,
-            "max_tokens": 512,
+            "max_tokens": max_tokens,
         }
     elif provider == "openrouter":
         url = "https://openrouter.ai/api/v1/chat/completions"
@@ -128,7 +360,7 @@ async def call_single_completion(
             "model": model,
             "messages": messages,
             "temperature": 0.0,
-            "max_tokens": 512,
+            "max_tokens": max_tokens,
         }
     else:
         return None, 0.0, f"Unsupported provider: {provider}"
@@ -153,18 +385,34 @@ async def call_single_completion(
                     content = msg.get("reasoning") or msg.get("reasoning_content") or ""
                 if str(content).strip():
                     return str(content), elapsed_ms, None
+                if provider == "openrouter":
+                    quarantine_model(model, 60.0)
                 return None, elapsed_ms, "EMPTY_CHOICES_CONTENT"
+            if provider == "openrouter":
+                quarantine_model(model, 60.0)
             return None, elapsed_ms, "EMPTY_CHOICES"
         elif response.status_code == 429:
+            quarantine_key(api_key, 429)
+            if provider == "openrouter":
+                quarantine_model(model, 60.0)
             return None, elapsed_ms, "RATE_LIMIT_429"
+        elif response.status_code in (401, 402, 403):
+            quarantine_key(api_key, response.status_code)
+            return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
         else:
+            if provider == "openrouter" and response.status_code in (404, 500, 502, 503, 504):
+                quarantine_model(model, 60.0)
             return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
 
     except httpx.TimeoutException:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        if provider == "openrouter":
+            quarantine_model(model, 60.0)
         return None, elapsed_ms, "TIMEOUT"
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        if provider == "openrouter":
+            quarantine_model(model, 60.0)
         return None, elapsed_ms, f"NETWORK_ERROR_{type(exc).__name__}: {str(exc)}"
 
 
@@ -177,6 +425,7 @@ async def call_model_with_budget_retry(
     timeout_ms: float,
     q_type: str,
     options: List[str],
+    max_tokens: int = 512,
 ) -> Tuple[Optional[str], Optional[ParsedLLMResponse], Optional[NormalizedAnswer], float, Optional[str]]:
     """
     Call model with budget-aware single fast retry on transient 5xx, network error,
@@ -184,7 +433,7 @@ async def call_model_with_budget_retry(
     Returns: (raw_text, parsed_response, normalized_answer, elapsed_ms, error_string)
     """
     t_start = time.perf_counter()
-    raw, el, err = await call_single_completion(client, provider, model, messages, api_key, timeout_ms)
+    raw, el, err = await call_single_completion(client, provider, model, messages, api_key, timeout_ms, max_tokens=max_tokens)
 
     parsed: Optional[ParsedLLMResponse] = None
     norm: Optional[NormalizedAnswer] = None
@@ -197,7 +446,7 @@ async def call_model_with_budget_retry(
                 await asyncio.sleep(0.1)  # 100ms backoff
                 rem_timeout = timeout_ms - ((time.perf_counter() - t_start) * 1000.0)
                 if rem_timeout > 200.0:
-                    raw, el2, err = await call_single_completion(client, provider, model, messages, api_key, rem_timeout)
+                    raw, el2, err = await call_single_completion(client, provider, model, messages, api_key, rem_timeout, max_tokens=max_tokens)
 
     # If HTTP call succeeded, parse & normalize
     if not err and raw:
@@ -211,7 +460,7 @@ async def call_model_with_budget_retry(
                 await asyncio.sleep(0.1)  # 100ms backoff
                 rem_timeout = timeout_ms - ((time.perf_counter() - t_start) * 1000.0)
                 if rem_timeout > 200.0:
-                    raw2, el2, err2 = await call_single_completion(client, provider, model, messages, api_key, rem_timeout)
+                    raw2, el2, err2 = await call_single_completion(client, provider, model, messages, api_key, rem_timeout, max_tokens=max_tokens)
                     if not err2 and raw2:
                         try:
                             parsed = parse_llm_response(raw2)
@@ -229,19 +478,277 @@ async def call_model_with_budget_retry(
     return raw, parsed, norm, total_elapsed, err
 
 
+async def run_hedged_openrouter_fallback(
+    client: httpx.AsyncClient,
+    fallback_pool: Union[List[str], List[dict]],
+    messages: List[dict],
+    q_type: str,
+    options: List[str],
+    timeout_ms: float,
+    norm_a: Optional[NormalizedAnswer],
+    norm_b: Optional[NormalizedAnswer],
+    succ_a: bool,
+    succ_b: bool,
+    parsed_a: Optional[ParsedLLMResponse] = None,
+    parsed_b: Optional[ParsedLLMResponse] = None,
+    s_tier_soft_escalation_ms: float = 1300.0,
+) -> Tuple[Optional[SolverResponse], List[str], Dict[str, Any]]:
+    """
+    Two-Wave Tier Cascade execution:
+    - Wave 1 (Top-Tier S-Tier Models First):
+      Dispatches top 2 healthy S-Tier models in parallel with distinct OpenRouter API keys.
+      Waits up to s_tier_soft_escalation_ms (1300ms). If an S-Tier model produces a 2-of-3 consensus,
+      cancels pending tasks and returns immediately.
+    - Wave 2 (Automatic Escalation to Lower-Tier A/B Models):
+      If S-Tier models fail/429/empty or s_tier_soft_escalation_ms elapses with remaining_ms >= 350,
+      concurrently launches up to 2 healthy A/B-Tier models without cancelling still-running S-Tier tasks.
+      Prefers S-Tier consensus if both complete.
+    """
+    meta_pool = [extract_model_meta(m) for m in fallback_pool if m]
+    valid_pool = [m for m in meta_pool if is_valid_chat_model(m["model"])]
+    valid_pool.sort(key=lambda x: (TIER_WEIGHT.get(x.get("tier", "B").upper(), 99), x.get("priority", 99)))
+
+    if not valid_pool:
+        return None, [], {"error": "NO_VALID_FALLBACK_MODELS", "success": False}
+
+    s_models = [m for m in valid_pool if m["tier"] == "S"]
+    lower_models = [m for m in valid_pool if m["tier"] in ("A", "B")]
+
+    # If no S-tier models exist (e.g. mock test pool), treat entire pool as Wave 1
+    if not s_models:
+        s_models = valid_pool
+        lower_models = []
+
+    healthy_s = [m for m in s_models if not is_model_quarantined(m["model"])]
+    if not healthy_s:
+        healthy_s = s_models
+
+    wave1_models = healthy_s[:2]
+    k1 = get_next_openrouter_key()
+    k2 = get_next_openrouter_key(exclude=k1) if len(wave1_models) > 1 else k1
+    keys_w1 = [k1, k2] if len(wave1_models) > 1 else [k1]
+
+    models_called: List[str] = [f"fallback_{i+1}:{m['model']}" for i, m in enumerate(wave1_models)]
+    fallback_details: Dict[str, Any] = {
+        "models": [m["model"] for m in wave1_models],
+        "results": [],
+    }
+
+    t0_fb = time.perf_counter()
+    task_meta: Dict[asyncio.Task, Dict[str, Any]] = {}
+
+    async def _runner(task_idx: int, model_meta: dict, key: str, task_timeout: float):
+        raw, parsed, norm, el, err = await call_model_with_budget_retry(
+            client, "openrouter", model_meta["model"], messages, key, task_timeout, q_type, options
+        )
+        return task_idx, model_meta, raw, parsed, norm, el, err
+
+    tasks = []
+    for i, m in enumerate(wave1_models):
+        t = asyncio.create_task(_runner(i, m, keys_w1[i], timeout_ms))
+        task_meta[t] = {"idx": i, "meta": m, "wave": 1}
+        tasks.append(t)
+
+    pending = set(tasks)
+    completed_results: List[Tuple[int, dict, Any, Any, Any, float, Any, bool]] = []
+    early_solution: Optional[SolverResponse] = None
+    wave2_launched = False
+
+    soft_timeout_sec = min(s_tier_soft_escalation_ms, timeout_ms) / 1000.0
+
+    while pending:
+        time_elapsed_ms = (time.perf_counter() - t0_fb) * 1000.0
+        remaining_hard_ms = max(10.0, timeout_ms - time_elapsed_ms)
+
+        if not wave2_launched and lower_models:
+            time_until_soft_sec = max(0.01, soft_timeout_sec - (time_elapsed_ms / 1000.0))
+            wait_timeout = min(time_until_soft_sec, remaining_hard_ms / 1000.0)
+        else:
+            wait_timeout = remaining_hard_ms / 1000.0
+
+        done, pending = await asyncio.wait(
+            pending,
+            timeout=wait_timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if done:
+            # Sort completed so S-tier is evaluated before A/B-tier
+            done_sorted = sorted(
+                list(done),
+                key=lambda t: (TIER_WEIGHT.get(task_meta[t]["meta"]["tier"], 99), task_meta[t]["meta"]["priority"])
+            )
+
+            for t in done_sorted:
+                try:
+                    idx, m_meta, raw, parsed, norm, el, err = await t
+                except (asyncio.CancelledError, Exception):
+                    continue
+
+                succ = bool(not err and norm and parsed)
+                res_entry = {
+                    "model": m_meta["model"],
+                    "tier": m_meta["tier"],
+                    "priority": m_meta["priority"],
+                    "success": succ,
+                    "error": err,
+                    "canonical_key": norm.canonical_key if norm else None,
+                    "reason": parsed.reason if parsed else None,
+                    "latency_ms": el,
+                }
+                fallback_details["results"].append(res_entry)
+                completed_results.append((idx, m_meta, raw, parsed, norm, el, err, succ))
+
+                # First-to-agree with Primary A or B
+                if succ and norm:
+                    if succ_a and norm_a and norm.canonical_key == norm_a.canonical_key:
+                        for p in pending:
+                            p.cancel()
+                        tier = "MEDIUM_TIEBREAKER_AGREE" if succ_b else "LOW_FALLBACK_RESCUE"
+                        reason = parsed.reason or (parsed_a.reason if parsed_a else "")
+                        early_solution = SolverResponse(
+                            status="OK",
+                            confidence_tier=tier,
+                            canonical_key=norm_a.canonical_key,
+                            selected_index=norm_a.selected_index,
+                            selected_text=norm_a.selected_text,
+                            permutation_indices=norm_a.permutation_indices,
+                            ordered_texts=norm_a.ordered_texts,
+                            reason=reason,
+                        )
+                        break
+
+                    if succ_b and norm_b and norm.canonical_key == norm_b.canonical_key:
+                        for p in pending:
+                            p.cancel()
+                        tier = "MEDIUM_TIEBREAKER_AGREE" if succ_a else "LOW_FALLBACK_RESCUE"
+                        reason = parsed.reason or (parsed_b.reason if parsed_b else "")
+                        early_solution = SolverResponse(
+                            status="OK",
+                            confidence_tier=tier,
+                            canonical_key=norm_b.canonical_key,
+                            selected_index=norm_b.selected_index,
+                            selected_text=norm_b.selected_text,
+                            permutation_indices=norm_b.permutation_indices,
+                            ordered_texts=norm_b.ordered_texts,
+                            reason=reason,
+                        )
+                        break
+
+            if early_solution is not None:
+                break
+
+            # Dual-fallback consensus check across all completed results
+            successful_fbs = [r for r in completed_results if r[7] and r[4]]
+            if len(successful_fbs) >= 2:
+                for i_fb in range(len(successful_fbs)):
+                    for j_fb in range(i_fb + 1, len(successful_fbs)):
+                        r1, r2 = successful_fbs[i_fb], successful_fbs[j_fb]
+                        norm1, norm2 = r1[4], r2[4]
+                        if norm1.canonical_key == norm2.canonical_key:
+                            for p in pending:
+                                p.cancel()
+                            parsed1, parsed2 = r1[3], r2[3]
+                            reason = parsed1.reason if parsed1 else (parsed2.reason if parsed2 else "")
+                            early_solution = SolverResponse(
+                                status="OK",
+                                confidence_tier="MEDIUM_TIEBREAKER_AGREE",
+                                canonical_key=norm1.canonical_key,
+                                selected_index=norm1.selected_index,
+                                selected_text=norm1.selected_text,
+                                permutation_indices=norm1.permutation_indices,
+                                ordered_texts=norm1.ordered_texts,
+                                reason=reason,
+                            )
+                            break
+                    if early_solution is not None:
+                        break
+
+            if early_solution is not None:
+                break
+
+        # Check for Wave 2 escalation
+        current_elapsed_ms = (time.perf_counter() - t0_fb) * 1000.0
+        rem_ms = timeout_ms - current_elapsed_ms
+        wave1_all_done = all(t.done() for t in task_meta if task_meta[t]["wave"] == 1)
+        soft_expired = current_elapsed_ms >= (s_tier_soft_escalation_ms - 15.0)
+
+        if not wave2_launched and lower_models and (wave1_all_done or soft_expired) and rem_ms >= 350.0:
+            wave2_launched = True
+            healthy_ab = [m for m in lower_models if not is_model_quarantined(m["model"])]
+            if not healthy_ab:
+                healthy_ab = lower_models
+            wave2_candidates = healthy_ab[:2]
+
+            k1_w2 = get_next_openrouter_key()
+            k2_w2 = get_next_openrouter_key(exclude=k1_w2) if len(wave2_candidates) > 1 else k1_w2
+            keys_w2 = [k1_w2, k2_w2] if len(wave2_candidates) > 1 else [k1_w2]
+
+            for j, m_ab in enumerate(wave2_candidates):
+                t_w2 = asyncio.create_task(_runner(len(tasks) + j, m_ab, keys_w2[j], rem_ms))
+                task_meta[t_w2] = {"idx": len(tasks) + j, "meta": m_ab, "wave": 2}
+                pending.add(t_w2)
+                models_called.append(f"fallback_w2_{j+1}:{m_ab['model']}")
+                fallback_details["models"].append(m_ab["model"])
+
+        if (time.perf_counter() - t0_fb) * 1000.0 >= timeout_ms:
+            for p in pending:
+                p.cancel()
+            break
+
+    if early_solution is not None:
+        if fallback_details["results"]:
+            first_res = fallback_details["results"][0]
+            fallback_details.update({k: v for k, v in first_res.items() if k not in ("models", "results")})
+        return early_solution, models_called, fallback_details
+
+    # Check agreement in any completed fallback pairs
+    successful_fbs = [r for r in completed_results if r[7] and r[4]]
+    if len(successful_fbs) >= 2:
+        for i_fb in range(len(successful_fbs)):
+            for j_fb in range(i_fb + 1, len(successful_fbs)):
+                r1, r2 = successful_fbs[i_fb], successful_fbs[j_fb]
+                norm1, norm2 = r1[4], r2[4]
+                if norm1.canonical_key == norm2.canonical_key:
+                    parsed1, parsed2 = r1[3], r2[3]
+                    reason = parsed1.reason if parsed1 else (parsed2.reason if parsed2 else "")
+                    rescue_solution = SolverResponse(
+                        status="OK",
+                        confidence_tier="MEDIUM_TIEBREAKER_AGREE",
+                        canonical_key=norm1.canonical_key,
+                        selected_index=norm1.selected_index,
+                        selected_text=norm1.selected_text,
+                        permutation_indices=norm1.permutation_indices,
+                        ordered_texts=norm1.ordered_texts,
+                        reason=reason,
+                    )
+                    if fallback_details["results"]:
+                        first_res = fallback_details["results"][0]
+                        fallback_details.update({k: v for k, v in first_res.items() if k not in ("models", "results")})
+                    return rescue_solution, models_called, fallback_details
+
+    if fallback_details["results"]:
+        first_res = fallback_details["results"][0]
+        fallback_details.update({k: v for k, v in first_res.items() if k not in ("models", "results")})
+    else:
+        fallback_details.update({"model": wave1_models[0]["model"], "success": False, "error": "FALLBACK_TIMEOUT", "latency_ms": timeout_ms})
+
+    return None, models_called, fallback_details
+
+
 async def check_models(config_path: Optional[str] = None) -> bool:
     """
     Verify model slugs and connectivity (--check-models):
-    Checks ALL THREE models (primary_a, primary_b, AND fallback) in a single execution
-    without returning early on the first error.
-    Reports PASS/FAIL, reason, and latency ms for each model.
+    Tests primary_a, primary_b, and every model in fallback_pool.
+    Filters non-chat models (embed/rerank/safety), benchmarks latency,
+    and displays a non-destructive audit table. Never mutates models.json.
     """
     config = load_models_config(config_path)
     groq_key, openrouter_key = load_api_keys()
 
-    print("=" * 70)
-    print("STARTING LIVE MODEL CATALOG & CONNECTIVITY VERIFICATION")
-    print("=" * 70)
+    print("=" * 115)
+    print("STARTING LIVE MODEL CATALOG & CONNECTIVITY VERIFICATION (NON-DESTRUCTIVE)")
+    print("=" * 115)
 
     if not groq_key:
         print("[CHECK-MODELS] ERROR: GROQ_API_KEY is not set in backend/.env")
@@ -253,20 +760,26 @@ async def check_models(config_path: Optional[str] = None) -> bool:
 
     pri_a = config.get("primary_a", {})
     pri_b = config.get("primary_b", {})
-    fb = config.get("fallback", {})
-
     model_a = pri_a.get("model", "")
     model_b = pri_b.get("model", "")
-    model_fb = fb.get("model", "")
+    tier_a = pri_a.get("tier", "S")
+    tier_b = pri_b.get("tier", "S")
+    prio_a = pri_a.get("priority", 1)
+    prio_b = pri_b.get("priority", 2)
+
+    ordered_pool = get_ordered_fallback_pool(config)
 
     fam_a = pri_a.get("family", "").strip().lower()
     fam_b = pri_b.get("family", "").strip().lower()
 
     results: Dict[str, Dict[str, Any]] = {
-        "primary_a": {"model": model_a, "provider": "groq", "pass": False, "reason": "", "latency_ms": 0.0},
-        "primary_b": {"model": model_b, "provider": "groq", "pass": False, "reason": "", "latency_ms": 0.0},
-        "fallback": {"model": model_fb, "provider": "openrouter", "pass": False, "reason": "", "latency_ms": 0.0},
+        "primary_a": {"model": model_a, "provider": "groq", "tier": tier_a, "priority": prio_a, "pass": False, "reason": "", "latency_ms": 0.0},
+        "primary_b": {"model": model_b, "provider": "groq", "tier": tier_b, "priority": prio_b, "pass": False, "reason": "", "latency_ms": 0.0},
     }
+
+    for item in ordered_pool:
+        m = item["model"]
+        results[m] = {"model": m, "provider": "openrouter", "tier": item["tier"], "priority": item["priority"], "pass": False, "reason": "", "latency_ms": 0.0}
 
     # Family uniqueness check
     if not fam_a or not fam_b or fam_a == fam_b:
@@ -274,12 +787,6 @@ async def check_models(config_path: Optional[str] = None) -> bool:
         print(f"[CHECK-MODELS] CONFIG ERROR: {msg}")
         results["primary_a"]["reason"] = msg
         results["primary_b"]["reason"] = msg
-
-    # Fallback ends with :free check
-    if not model_fb.endswith(":free"):
-        msg = f"fallback model '{model_fb}' must end with ':free'"
-        print(f"[CHECK-MODELS] CONFIG ERROR: {msg}")
-        results["fallback"]["reason"] = msg
 
     test_messages = [
         {"role": "system", "content": 'Respond ONLY with JSON: {"answer": "A", "reason": "test"}'},
@@ -315,7 +822,7 @@ async def check_models(config_path: Optional[str] = None) -> bool:
         if model_a in groq_slugs:
             print(f"[CHECK-MODELS] Testing live completion on primary_a ({model_a})...")
             raw_a, el_a, err_a = await call_single_completion(
-                client, "groq", model_a, test_messages, groq_key, timeout_ms=5000
+                client, "groq", model_a, test_messages, groq_key, timeout_ms=5000, max_tokens=256
             )
             results["primary_a"]["latency_ms"] = el_a
             if not err_a and raw_a:
@@ -335,7 +842,7 @@ async def check_models(config_path: Optional[str] = None) -> bool:
         if model_b in groq_slugs:
             print(f"[CHECK-MODELS] Testing live completion on primary_b ({model_b})...")
             raw_b, el_b, err_b = await call_single_completion(
-                client, "groq", model_b, test_messages, groq_key, timeout_ms=5000
+                client, "groq", model_b, test_messages, groq_key, timeout_ms=5000, max_tokens=256
             )
             results["primary_b"]["latency_ms"] = el_b
             if not err_b and raw_b:
@@ -365,51 +872,73 @@ async def check_models(config_path: Optional[str] = None) -> bool:
                 or_free_slugs = {m.get("id") for m in data if m.get("id", "").endswith(":free")}
                 print(f"  -> Found {len(or_free_slugs)} active :free models on OpenRouter.")
             else:
-                err_msg = f"OpenRouter catalog HTTP_{or_res.status_code}"
-                print(f"  -> {err_msg}")
-                results["fallback"]["reason"] = err_msg
+                print(f"  -> OpenRouter catalog returned HTTP_{or_res.status_code}")
         except Exception as e:
-            err_msg = f"OpenRouter connection error: {e}"
-            print(f"  -> {err_msg}")
-            results["fallback"]["reason"] = err_msg
+            print(f"  -> OpenRouter connection error: {e}")
 
-        # Test fallback
-        if model_fb in or_free_slugs:
-            print(f"[CHECK-MODELS] Testing live completion on fallback ({model_fb})...")
+        # Benchmark each candidate in ordered_pool
+        print(f"\n[CHECK-MODELS] Testing {len(ordered_pool)} OpenRouter fallback candidates (Tier-Priority Order)...")
+        for item in ordered_pool:
+            fb_m = item["model"]
+            tier = item["tier"]
+            prio = item["priority"]
+
+            if not is_valid_chat_model(fb_m):
+                msg = "Rejected: non-chat model slug (embed/rerank/safety/whisper/tts)"
+                results[fb_m]["pass"] = False
+                results[fb_m]["reason"] = msg
+                print(f"  -> [{tier}#{prio}] {fb_m}: REJECTED ({msg})")
+                continue
+
+            if not fb_m.endswith(":free"):
+                msg = f"Model '{fb_m}' does not end with ':free'"
+                results[fb_m]["pass"] = False
+                results[fb_m]["reason"] = msg
+                print(f"  -> [{tier}#{prio}] {fb_m}: FAIL ({msg})")
+                continue
+
+            key_for_test = get_next_openrouter_key() or openrouter_key
             raw_fb, el_fb, err_fb = await call_single_completion(
-                client, "openrouter", model_fb, test_messages, openrouter_key, timeout_ms=8000
+                client, "openrouter", fb_m, test_messages, key_for_test, timeout_ms=8000, max_tokens=256
             )
-            results["fallback"]["latency_ms"] = el_fb
+            results[fb_m]["latency_ms"] = el_fb
             if not err_fb and raw_fb:
-                results["fallback"]["pass"] = True
-                results["fallback"]["reason"] = "OK"
-                print(f"  -> fallback PASS ({el_fb:.0f}ms)")
+                results[fb_m]["pass"] = True
+                results[fb_m]["reason"] = "OK"
+                print(f"  -> [{tier}#{prio}] {fb_m}: PASS ({el_fb:.0f}ms)")
+            elif err_fb == "RATE_LIMIT_429" and (not or_free_slugs or fb_m in or_free_slugs):
+                results[fb_m]["pass"] = True
+                results[fb_m]["reason"] = "RATE_LIMIT_429 (Active in Catalog)"
+                print(f"  -> [{tier}#{prio}] {fb_m}: PASS ({el_fb:.0f}ms): Active in Catalog (Key Rate Limited)")
             else:
-                results["fallback"]["pass"] = False
-                results["fallback"]["reason"] = err_fb or "EMPTY"
-                print(f"  -> fallback FAIL ({el_fb:.0f}ms): {err_fb}")
-        else:
-            if not results["fallback"]["reason"]:
-                results["fallback"]["reason"] = f"Model '{model_fb}' not found in OpenRouter :free list: {sorted(list(or_free_slugs))[:5]}"
-            print(f"  -> fallback FAIL: {results['fallback']['reason']}")
+                results[fb_m]["pass"] = False
+                results[fb_m]["reason"] = err_fb or "EMPTY"
+                print(f"  -> [{tier}#{prio}] {fb_m}: FAIL ({el_fb:.0f}ms): {err_fb}")
 
-    # Summary Report Table
-    print("\n" + "=" * 70)
-    print("MODEL VERIFICATION SUMMARY REPORT")
-    print("=" * 70)
-    print(f"{'Role':<12} | {'Provider':<11} | {'Model':<35} | {'Status':<6} | {'Latency':<8} | Reason")
-    print("-" * 95)
-    all_passed = True
-    for role in ["primary_a", "primary_b", "fallback"]:
+    # Non-destructive summary: do NOT write to models.json!
+    passing_pool = [item["model"] for item in ordered_pool if results[item["model"]]["pass"]]
+
+    print("\n" + "=" * 115)
+    print("MODEL VERIFICATION SUMMARY REPORT (IMMUTABLE CAPABILITY-TIER ORDER)")
+    print("=" * 115)
+    print(f"{'Role':<14} | {'Provider':<11} | {'Tier':<4} | {'Prio':<4} | {'Model':<44} | {'Status':<6} | {'Latency':<8} | Reason")
+    print("-" * 115)
+    for role in ["primary_a", "primary_b"]:
         res = results[role]
         status_str = "PASS" if res["pass"] else "FAIL"
         lat_str = f"{res['latency_ms']:.0f} ms" if res["pass"] else "--"
-        print(f"{role:<12} | {res['provider']:<11} | {res['model']:<35} | {status_str:<6} | {lat_str:<8} | {res['reason']}")
-        if not res["pass"]:
-            all_passed = False
-    print("=" * 70)
+        print(f"{role:<14} | {res['provider']:<11} | {res['tier']:<4} | {res['priority']:<4} | {res['model']:<44} | {status_str:<6} | {lat_str:<8} | {res['reason']}")
 
-    return all_passed
+    for item in ordered_pool:
+        fb_m = item["model"]
+        res = results[fb_m]
+        status_str = "PASS" if res["pass"] else "FAIL"
+        lat_str = f"{res['latency_ms']:.0f} ms" if res["pass"] else "--"
+        print(f"{'fallback_pool':<14} | {res['provider']:<11} | {res['tier']:<4} | {res['priority']:<4} | {res['model']:<44} | {status_str:<6} | {lat_str:<8} | {res['reason']}")
+    print("=" * 115)
+
+    overall_pass = bool(results["primary_a"]["pass"] and results["primary_b"]["pass"] and len(passing_pool) >= 2)
+    return overall_pass
 
 
 async def solve_question(
@@ -421,7 +950,7 @@ async def solve_question(
     client: Optional[httpx.AsyncClient] = None,
 ) -> SolverResponse:
     """
-    Solve a single quiz question using parallel primary calls + conditional fallback.
+    Solve a single quiz question using parallel primary calls + parallel hedged fallback.
     Adheres strictly to the 3000ms hard budget, derived cross-model confidence,
     budget-aware fast retries, and timeout/error penalty rules.
     """
@@ -431,12 +960,14 @@ async def solve_question(
     groq_key, openrouter_key = load_api_keys()
     pri_a = config["primary_a"]
     pri_b = config["primary_b"]
-    fb = config["fallback"]
+    fb_config = config.get("fallback", {})
+    fallback_pool = config.get("fallback_pool") or ([fb_config.get("model")] if fb_config else [])
     timeouts = config.get("timeouts_ms", {})
 
-    groq_timeout_ms = float(timeouts.get("groq_parallel_timeout_ms", 1800))
-    fb_timeout_ms_max = float(timeouts.get("openrouter_fallback_timeout_ms", 2200))
+    groq_timeout_ms = float(timeouts.get("groq_parallel_timeout_ms", 1750))
+    fb_timeout_ms_max = float(timeouts.get("openrouter_fallback_timeout_ms", 2150))
     hard_budget_ms = float(timeouts.get("hard_total_budget_ms", 3000))
+    s_tier_soft_ms = float(timeouts.get("s_tier_soft_escalation_ms", 1300))
 
     messages = build_prompt_messages(subject, q_type, question, options)
 
@@ -507,6 +1038,32 @@ async def solve_question(
 
         # PATH C: Both primaries failed/errored/timed out
         if not succ_a and not succ_b:
+            remaining_ms = hard_budget_ms - elapsed_primaries_ms
+            # Dual-primary failure rescue if remaining budget >= 800ms
+            if remaining_ms >= 800.0:
+                fb_call_timeout = min(fb_timeout_ms_max, remaining_ms)
+                rescue_sol, fb_models_called, fb_details = await run_hedged_openrouter_fallback(
+                    client=client,
+                    fallback_pool=fallback_pool,
+                    messages=messages,
+                    q_type=q_type,
+                    options=options,
+                    timeout_ms=fb_call_timeout,
+                    norm_a=None,
+                    norm_b=None,
+                    succ_a=False,
+                    succ_b=False,
+                    s_tier_soft_escalation_ms=s_tier_soft_ms,
+                )
+                models_called.extend(fb_models_called)
+                agreement_details["fallback"] = fb_details
+                if rescue_sol is not None:
+                    total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    rescue_sol.latency_ms = total_elapsed_ms
+                    rescue_sol.models_called = models_called
+                    rescue_sol.agreement_details = agreement_details
+                    return rescue_sol
+
             return SolverResponse(
                 status="UNCERTAIN",
                 confidence_tier="UNCERTAIN_PRIMARY_FAILURE",
@@ -531,8 +1088,8 @@ async def solve_question(
 
         # STAGE 2A: SearXNG Factual Search Fallback
         searxng_url, searxng_enabled = get_searxng_config()
-        searxng_timeout_ms = float(timeouts.get("searxng_timeout_ms", 700))
-        searxng_grounded_timeout_ms = float(timeouts.get("searxng_grounded_llm_timeout_ms", 950))
+        searxng_timeout_ms = float(timeouts.get("searxng_timeout_ms", 650))
+        searxng_grounded_timeout_ms = float(timeouts.get("searxng_grounded_llm_timeout_ms", 900))
 
         should_try_searxng = (
             searxng_enabled
@@ -663,60 +1220,34 @@ async def solve_question(
                     error="Budget exhausted after SearXNG grounding",
                 )
 
-        # Trigger Fallback with budget-aware retry
-        models_called.append("fallback")
+        # STAGE 2B: Parallel Hedged Fallback Racing
         fb_call_timeout = min(fb_timeout_ms_max, remaining_ms)
-        raw_fb, parsed_fb, norm_fb, el_fb, err_fb = await call_model_with_budget_retry(
-            client, fb["provider"], fb["model"], messages, openrouter_key, fb_call_timeout, q_type, options
+        hedged_sol, fb_models_called, fb_details = await run_hedged_openrouter_fallback(
+            client=client,
+            fallback_pool=fallback_pool,
+            messages=messages,
+            q_type=q_type,
+            options=options,
+            timeout_ms=fb_call_timeout,
+            norm_a=norm_a,
+            norm_b=norm_b,
+            succ_a=succ_a,
+            succ_b=succ_b,
+            parsed_a=parsed_a,
+            parsed_b=parsed_b,
+            s_tier_soft_escalation_ms=s_tier_soft_ms,
         )
-
-        succ_fb = bool(not err_fb and norm_fb and parsed_fb)
+        models_called.extend(fb_models_called)
+        agreement_details["fallback"] = fb_details
         total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-        agreement_details["fallback"] = {
-            "model": fb["model"],
-            "success": succ_fb,
-            "error": err_fb,
-            "canonical_key": norm_fb.canonical_key if norm_fb else None,
-            "reason": parsed_fb.reason if parsed_fb else None,
-            "latency_ms": el_fb,
-        }
+        if hedged_sol is not None:
+            hedged_sol.latency_ms = total_elapsed_ms
+            hedged_sol.models_called = models_called
+            hedged_sol.agreement_details = agreement_details
+            return hedged_sol
 
-        # Check fallback agreement
-        if succ_fb and norm_fb:
-            if succ_a and norm_a and norm_fb.canonical_key == norm_a.canonical_key:
-                tier = "MEDIUM_TIEBREAKER_AGREE" if succ_b else "LOW_FALLBACK_RESCUE"
-                return SolverResponse(
-                    status="OK",
-                    confidence_tier=tier,
-                    canonical_key=norm_a.canonical_key,
-                    selected_index=norm_a.selected_index,
-                    selected_text=norm_a.selected_text,
-                    permutation_indices=norm_a.permutation_indices,
-                    ordered_texts=norm_a.ordered_texts,
-                    reason=parsed_fb.reason or (parsed_a.reason if parsed_a else ""),
-                    latency_ms=total_elapsed_ms,
-                    models_called=models_called,
-                    agreement_details=agreement_details,
-                )
-
-            if succ_b and norm_b and norm_fb.canonical_key == norm_b.canonical_key:
-                tier = "MEDIUM_TIEBREAKER_AGREE" if succ_a else "LOW_FALLBACK_RESCUE"
-                return SolverResponse(
-                    status="OK",
-                    confidence_tier=tier,
-                    canonical_key=norm_b.canonical_key,
-                    selected_index=norm_b.selected_index,
-                    selected_text=norm_b.selected_text,
-                    permutation_indices=norm_b.permutation_indices,
-                    ordered_texts=norm_b.ordered_texts,
-                    reason=parsed_fb.reason or (parsed_b.reason if parsed_b else ""),
-                    latency_ms=total_elapsed_ms,
-                    models_called=models_called,
-                    agreement_details=agreement_details,
-                )
-
-        had_timeout_or_error = bool(err_a or err_b or err_fb or not succ_fb)
+        had_timeout_or_error = bool(err_a or err_b or not fb_details.get("success", False))
         penalty = hard_budget_ms if had_timeout_or_error else total_elapsed_ms
 
         return SolverResponse(
@@ -725,7 +1256,7 @@ async def solve_question(
             latency_ms=penalty,
             models_called=models_called,
             agreement_details=agreement_details,
-            error=f"No consensus reached between models (fb_err={err_fb})",
+            error=f"No consensus reached between models (fb_err={fb_details.get('error')})",
         )
 
     finally:

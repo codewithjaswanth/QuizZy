@@ -243,7 +243,7 @@ def get_cached_solution(
             "confidence_tier": row["confidence_tier"],
             "confidence_label": row["confidence_label"],
             "confidence_score": float(row["confidence_score"]),
-            "auto_eligible": (row["confidence_tier"] in ("HIGH_BOTH_AGREE", "USER_VERIFIED_OVERRIDE")),
+            "auto_eligible": (row["confidence_tier"] in ("HIGH_BOTH_AGREE", "USER_VERIFIED_OVERRIDE", "MEDIUM_TIEBREAKER_AGREE", "MEDIUM_SEARXNG_GROUNDED")),
             "cache_hit": True,
             "models_called": [],
             "hit_count": row["hit_count"] + 1,

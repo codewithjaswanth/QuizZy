@@ -329,7 +329,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // 6. Execute Quiz Action (Auto Mode or Single-Step Apply)
-  if (action === "EXECUTE_QUIZ_ACTION") {
+  if (action === "EXECUTE_QUIZ_ACTION" || action === "EXECUTE_ACTION") {
     resolveTargetTab(message, sender).then(async (targetTab) => {
       if (!targetTab || !targetTab.id) {
         sendResponse({ success: false, error: "No active tab found for action execution." });
@@ -348,8 +348,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           world: "ISOLATED",
           func: (payload) => {
             const exec = window.QuizZyExecutor || window.__QuizZyExecutor;
-            if (exec && typeof exec.executeAction === "function") {
-              return exec.executeAction(payload);
+            if (exec && (typeof exec.executeQuizAction === "function" || typeof exec.executeAction === "function")) {
+              const fn = exec.executeQuizAction || exec.executeAction;
+              return fn.call(exec, payload);
             }
             return { success: false, error: "QuizZyExecutor not loaded in tab." };
           },

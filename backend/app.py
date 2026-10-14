@@ -23,7 +23,12 @@ from backend.cache import (
     init_db,
     record_wrong_answer,
 )
-from backend.core.llm_client import load_models_config, solve_question
+from backend.core.llm_client import (
+    get_active_fallback_pool,
+    load_models_config,
+    load_openrouter_api_keys,
+    solve_question,
+)
 from backend.core.normalizer import normalize_text_answer
 from backend.core.searxng_client import get_searxng_config, is_searxng_circuit_open
 from backend.schemas import (
@@ -177,12 +182,16 @@ async def health_check() -> HealthResponse:
     stats = get_cache_stats()
     models_summary = getattr(app.state, "models_config", {})
     _, searxng_enabled = get_searxng_config()
+    openrouter_keys = load_openrouter_api_keys()
+    active_pool = get_active_fallback_pool(models_summary)
     return HealthResponse(
         status="ok",
         models=models_summary,
         cache_entries=stats.get("cache_entries", 0),
         searxng_enabled=searxng_enabled,
         searxng_circuit_open=is_searxng_circuit_open(),
+        openrouter_keys_loaded=len(openrouter_keys),
+        active_fallback_pool=active_pool,
     )
 
 
@@ -265,11 +274,11 @@ async def solve_endpoint(req: SolveRequest) -> SolveResponse:
     elif tier == "MEDIUM_SEARXNG_GROUNDED":
         confidence_label = "medium"
         confidence_score = 0.75
-        auto_eligible = False
+        auto_eligible = is_ok
     elif tier == "MEDIUM_TIEBREAKER_AGREE":
         confidence_label = "medium"
         confidence_score = 0.67
-        auto_eligible = False
+        auto_eligible = is_ok
     elif tier == "LOW_FALLBACK_RESCUE":
         confidence_label = "low"
         confidence_score = 0.5

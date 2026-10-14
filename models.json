@@ -2,23 +2,75 @@
   "primary_a": {
     "provider": "groq",
     "family": "gpt-oss",
-    "model": "openai/gpt-oss-120b"
+    "model": "openai/gpt-oss-120b",
+    "tier": "S",
+    "priority": 1
   },
   "primary_b": {
     "provider": "groq",
     "family": "qwen",
-    "model": "qwen/qwen3.8-27b"
+    "model": "qwen/qwen3.8-27b",
+    "tier": "S",
+    "priority": 2
   },
   "fallback": {
     "provider": "openrouter",
     "family": "nemotron",
-    "model": "nvidia/nemotron-3-super-120b-a12b:free"
+    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "tier": "S",
+    "priority": 2
   },
+  "hedged_fallback_concurrency": 2,
+  "fallback_pool": [
+    {
+      "provider": "openrouter",
+      "family": "nemotron",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "tier": "S",
+      "priority": 1
+    },
+    {
+      "provider": "openrouter",
+      "family": "nemotron",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "tier": "S",
+      "priority": 2
+    },
+    {
+      "provider": "openrouter",
+      "family": "gemma",
+      "model": "google/gemma-4-31b-it:free",
+      "tier": "S",
+      "priority": 3
+    },
+    {
+      "provider": "openrouter",
+      "family": "gemma",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "tier": "A",
+      "priority": 4
+    },
+    {
+      "provider": "openrouter",
+      "family": "nemotron",
+      "model": "nvidia/nemotron-3.5-lightning:free",
+      "tier": "B",
+      "priority": 5
+    },
+    {
+      "provider": "openrouter",
+      "family": "lfm",
+      "model": "liquid/lfm-2.5-2.6b:free",
+      "tier": "B",
+      "priority": 6
+    }
+  ],
   "timeouts_ms": {
-    "groq_parallel_timeout_ms": 1800,
-    "openrouter_fallback_timeout_ms": 2200,
-    "searxng_timeout_ms": 700,
-    "searxng_grounded_llm_timeout_ms": 950,
+    "groq_parallel_timeout_ms": 1750,
+    "openrouter_fallback_timeout_ms": 2150,
+    "searxng_timeout_ms": 650,
+    "searxng_grounded_llm_timeout_ms": 900,
+    "s_tier_soft_escalation_ms": 1300,
     "hard_total_budget_ms": 3000
   }
 }

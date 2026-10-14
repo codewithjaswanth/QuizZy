@@ -129,7 +129,7 @@ async def test_3_disagreement_rescued_by_searxng():
     # primary_b chooses Option C (Canberra)
     # SearXNG returns snippets indicating Canberra
     # Grounded primary_b call evaluates snippets and confirms Option C (Canberra)
-    # Result: confidence_tier == MEDIUM_SEARXNG_GROUNDED, searxng_used == True, auto_eligible == False
+    # Result: confidence_tier == MEDIUM_SEARXNG_GROUNDED, searxng_used == True, auto_eligible == True
 
     mock_snippets = [
         {"title": "Canberra - Capital of Australia", "content": "Canberra is the federal capital city of Australia.", "url": "https://example.com/canberra"},
@@ -211,7 +211,7 @@ async def test_3_disagreement_rescued_by_searxng():
             assert data["confidence_tier"] == "MEDIUM_SEARXNG_GROUNDED"
             assert data["confidence_label"] == "medium"
             assert data["confidence_score"] == 0.75
-            assert data["auto_eligible"] is False, "MEDIUM_SEARXNG_GROUNDED must NOT be auto_eligible by default"
+            assert data["auto_eligible"] is True, "MEDIUM_SEARXNG_GROUNDED must be auto_eligible (2-of-3 consensus)"
             assert data["searxng_used"] is True
             assert len(data["search_sources"]) > 0
 

@@ -307,10 +307,10 @@
 
         <div class="guardrail-checkboxes" style="margin-top: 8px;">
           <label class="toggle-label" for="chk-require-high">
-            <input type="checkbox" id="chk-require-high" checked />
+            <input type="checkbox" id="chk-require-high" data-id="chk-high-agree-only" />
             <span class="toggle-text">
-              <strong>Require HIGH_BOTH_AGREE Only</strong>
-              <small class="toggle-desc">Immediately halts Auto Mode if models disagree or tie-breaker is needed.</small>
+              <strong>Strict Mode: Pause on Tie-Breaker (Require Primary Agreement Only)</strong>
+              <small class="toggle-desc">When disabled (default), Auto Mode continues on 2-of-3 consensus (Tie-Breaker / Web Grounded). When enabled, halts unless both primaries agree.</small>
             </span>
           </label>
         </div>

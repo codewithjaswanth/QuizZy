@@ -269,6 +269,11 @@
       return true;
     }
 
+    // Validation error messages (e.g. learning.ccbp.in red error banner)
+    if (/^(?:please\s*select\s*(?:an?\s*)?(?:option|answer)|select\s*(?:an?\s*)?(?:option|answer))$/i.test(t)) {
+      return true;
+    }
+
     // Top-bar navigation, controls, scores, instructions, CCBP student ID & disclaimers
     if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|id\s*:\s*[A-Za-z0-9]+)/i.test(t)) {
       return true;
@@ -293,12 +298,13 @@
 
   /**
    * Helper that checks if an element or any of its descendants is or contains an action button
-   * (e.g. SUBMIT, SHOW ANSWER, SKIP) or a quiz footer/disclaimer (e.g. "If you skip...").
+   * (e.g. SUBMIT, SHOW ANSWER, SKIP) or a quiz footer/disclaimer (e.g. "If you skip...")
+   * or a validation error message (e.g. "Please select an option").
    */
   function containsActionButtonOrFooter(el) {
     if (!el || el.nodeType !== 1) return false;
-    const actionPattern = /^(?:SHOW ANSWER|HIDE ANSWER|SUBMIT|SUBMIT ANSWER|SKIP|NEXT|NEXT QUESTION|PREVIOUS|END PRACTICE|PRACTICE INSTRUCTIONS|HINT|REPORT|CHECK|FINISH|VIEW REPORT)$/;
-    const footerKeywords = /(?:IF YOU SKIP, YOU CAN ATTEMPT|QUESTIONS ATTEMPTED|END PRACTICE|PRACTICE INSTRUCTIONS)/;
+    const actionPattern = /^(?:SHOW ANSWER|HIDE ANSWER|SUBMIT|SUBMIT ANSWER|SKIP|NEXT|NEXT QUESTION|PREVIOUS|END PRACTICE|PRACTICE INSTRUCTIONS|HINT|REPORT|CHECK|FINISH|VIEW REPORT|PLEASE SELECT AN OPTION|PLEASE SELECT AN ANSWER|SELECT AN OPTION|SELECT AN ANSWER)$/;
+    const footerKeywords = /(?:IF YOU SKIP, YOU CAN ATTEMPT|QUESTIONS ATTEMPTED|END PRACTICE|PRACTICE INSTRUCTIONS|PLEASE SELECT AN OPTION|PLEASE SELECT AN ANSWER|SELECT AN OPTION)/;
 
     const elText = cleanText(el.textContent || el.innerText || "").toUpperCase();
     if (actionPattern.test(elText) || footerKeywords.test(elText)) {
@@ -618,6 +624,102 @@
   }
 
   /**
+   * Smart React click target resolution for MCQ options.
+   * Handles native radio inputs, linked labels, and custom classless React rows (e.g. learning.ccbp.in).
+   */
+  function triggerOptionSelect(targetEl) {
+    if (!targetEl) return false;
+
+    const doc = targetEl.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const radio = targetEl.querySelector
+      ? (targetEl.querySelector("input[type='radio'], input[type='checkbox']") || (["INPUT"].includes(targetEl.tagName) ? targetEl : null))
+      : null;
+
+    const label = (targetEl.tagName === "LABEL")
+      ? targetEl
+      : (targetEl.querySelector ? targetEl.querySelector("label") : null) ||
+        (radio && radio.id && doc ? doc.querySelector(`label[for="${radio.id}"]`) : null);
+
+    // Case A: <input type="radio" | "checkbox"> exists inside targetEl or linked via label
+    if (radio) {
+      if (label) {
+        dispatchClick(label);
+      }
+      if (!radio.checked) {
+        dispatchClick(radio);
+      }
+
+      if (!radio.checked) {
+        try {
+          if (radio._valueTracker && typeof radio._valueTracker.setValue === "function") {
+            radio._valueTracker.setValue(false);
+          }
+        } catch (_) {}
+
+        try {
+          const proto = (typeof window !== "undefined" && window.HTMLInputElement)
+            ? window.HTMLInputElement.prototype
+            : null;
+          const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "checked") : null;
+          if (descriptor && descriptor.set) {
+            descriptor.set.call(radio, true);
+          } else {
+            radio.checked = true;
+          }
+        } catch (_) {
+          radio.checked = true;
+        }
+
+        try {
+          radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+          radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+          radio.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        } catch (_) {}
+      }
+      return true;
+    }
+
+    // Case B: Custom classless React row with NO <input> (e.g. learning.ccbp.in)
+    // 1. Probe whether bubbling click on child reaches targetEl
+    let targetReceivedEvent = false;
+    const probeListener = () => { targetReceivedEvent = true; };
+    if (typeof targetEl.addEventListener === "function") {
+      targetEl.addEventListener("click", probeListener, true);
+    }
+
+    // 2. Identify interactive or indicator children inside targetEl
+    const directChildren = Array.from(targetEl.children || []).filter(isVisible);
+    const roleEl = targetEl.querySelector ? targetEl.querySelector("[role='radio'], [role='option'], [tabindex]") : null;
+
+    let targetChild = null;
+    if (roleEl && roleEl !== targetEl) {
+      targetChild = roleEl;
+    } else if (directChildren.length > 0) {
+      // Find circle indicator child (element with radio role, circle class, or first child)
+      targetChild = directChildren.find(c => {
+        const cls = String(c.className || "").toLowerCase();
+        const role = c.getAttribute ? c.getAttribute("role") : "";
+        return role === "radio" || role === "checkbox" || cls.includes("circle") || cls.includes("radio") || cls.includes("indicator") || c.tagName === "SVG";
+      }) || directChildren[0];
+    }
+
+    if (targetChild && targetChild !== targetEl) {
+      dispatchClick(targetChild);
+    }
+
+    // If bubbling didn't trigger listener on targetEl or if targetEl has no children, click targetEl directly
+    if (!targetReceivedEvent) {
+      dispatchClick(targetEl);
+    }
+
+    if (typeof targetEl.removeEventListener === "function") {
+      targetEl.removeEventListener("click", probeListener, true);
+    }
+
+    return true;
+  }
+
+  /**
    * Executes plain DOM click on targeted MCQ option.
    * Handles 1:1 text parity with extractor.js and React 16-18 controlled radio selection.
    */
@@ -627,13 +729,33 @@
       return { success: false, error: "No option elements found on host page." };
     }
 
-    let targetIndex = (typeof payload.selected_index === "number" && payload.selected_index >= 0)
-      ? payload.selected_index
-      : null;
+    let targetIndex = null;
+    if (typeof payload.targetIndex === "number" && payload.targetIndex >= 0) {
+      targetIndex = payload.targetIndex;
+    } else if (typeof payload.selected_index === "number" && payload.selected_index >= 0) {
+      targetIndex = payload.selected_index;
+    }
 
-    const targetText = payload.targetText || payload.selected_text || payload.answer || null;
-    const targetHasCode = targetText ? (targetText.includes("\n") || /^\s*(def|class|import|return|for|while|if|else|print)\b/.test(targetText)) : false;
-    const cleanTargetText = targetText ? normalizeOptionWhitespace(targetText, targetHasCode) : null;
+    // Check if payload.letter, payload.canonical_key, or payload.answer is a single synthetic letter "A"–"F"
+    let syntheticLetter = "";
+    if (typeof payload.letter === "string" && /^[A-F]$/i.test(payload.letter.trim())) {
+      syntheticLetter = payload.letter.trim().toUpperCase();
+    } else if (typeof payload.canonical_key === "string" && /^[A-F]$/i.test(payload.canonical_key.trim())) {
+      syntheticLetter = payload.canonical_key.trim().toUpperCase();
+    } else if (typeof payload.answer === "string" && /^[A-F]$/i.test(payload.answer.trim())) {
+      syntheticLetter = payload.answer.trim().toUpperCase();
+    }
+
+    // If targetIndex is not explicitly set, convert single letter "A"–"F" to 0–5 index
+    if (targetIndex === null && syntheticLetter) {
+      targetIndex = syntheticLetter.charCodeAt(0) - 65;
+    }
+
+    // Never try to text-match a single synthetic letter "A"–"F" against full option strings!
+    let rawTargetText = payload.targetText || payload.selected_text || null;
+    if (!rawTargetText && payload.answer && !/^[A-F]$/i.test(String(payload.answer).trim())) {
+      rawTargetText = payload.answer;
+    }
 
     // Clean text representations of all options using 1:1 extractor-identical logic
     const optionCleanTexts = options.map((optEl) => {
@@ -642,82 +764,47 @@
       return normalizeOptionWhitespace(raw, hasCode);
     });
 
-    // If targetText was supplied, try matching by clean text first for full text parity
+    const targetHasCode = rawTargetText ? (rawTargetText.includes("\n") || /^\s*(def|class|import|return|for|while|if|else|print)\b/.test(rawTargetText)) : false;
+    const cleanTargetText = rawTargetText ? normalizeOptionWhitespace(rawTargetText, targetHasCode) : null;
+
+    // 1. Exact normalized text match (cleanOptText === cleanTargetText)
     if (cleanTargetText) {
-      const textIdx = optionCleanTexts.findIndex((optText) => {
-        if (!optText) return false;
-        if (optText === cleanTargetText) return true;
-        // For non-code single-line options, allow case-insensitive match
-        if (!targetHasCode && !optText.includes("\n")) {
-          return optText.toLowerCase() === cleanTargetText.toLowerCase();
+      const exactIdx = optionCleanTexts.findIndex((optText) => optText && optText === cleanTargetText);
+      if (exactIdx !== -1) {
+        targetIndex = exactIdx;
+      } else {
+        // 2. Case-insensitive normalized text match
+        const ciIdx = optionCleanTexts.findIndex((optText) => {
+          if (!optText) return false;
+          if (!targetHasCode && !optText.includes("\n")) {
+            return optText.toLowerCase() === cleanTargetText.toLowerCase();
+          }
+          return false;
+        });
+        if (ciIdx !== -1) {
+          targetIndex = ciIdx;
         }
-        return false;
-      });
-      if (textIdx !== -1) {
-        targetIndex = textIdx;
       }
     }
 
-    if (targetIndex === null || typeof targetIndex !== "number" || targetIndex < 0) {
+    // 3. Valid targetIndex fallback (0 <= targetIndex < options.length)
+    if (targetIndex === null || typeof targetIndex !== "number" || targetIndex < 0 || targetIndex >= options.length) {
       return {
         success: false,
-        error: `Invalid or unmatched target option (selected_index: ${payload.selected_index}, targetText: ${targetText})`
-      };
-    }
-
-    if (targetIndex >= options.length) {
-      return {
-        success: false,
-        error: `Target option index ${targetIndex} out of bounds (found ${options.length} options).`
+        error: `Target option out of bounds or unmatched (targetIndex: ${targetIndex}, options: ${options.length}, targetText: ${rawTargetText})`
       };
     }
 
     const targetEl = options[targetIndex];
-    const radio = targetEl.querySelector
-      ? (targetEl.querySelector("input[type='radio']") || (targetEl.tagName === "INPUT" && targetEl.type === "radio" ? targetEl : null))
-      : null;
 
-    // 1. Single-target click dispatch: NEVER click both targetEl and an inner child
-    // If targetEl contains an <input type="radio" | "checkbox">, <label>, or <button>, click that interactive child (which bubbles up).
-    // If targetEl is a classless <div> or <li> (no input/label/button), click targetEl directly once.
-    let interactiveChild = null;
-    if (targetEl.querySelector) {
-      interactiveChild = targetEl.querySelector("input[type='radio'], input[type='checkbox'], label, button, [role='button'], [role='radio']");
+    // Remember last selected option for auto-mode retry & validation recovery
+    if (typeof window !== "undefined") {
+      window.__QUIZZY_LAST_SELECTED_OPTION__ = targetEl;
+      window.__QUIZZY_LAST_ACTION_PAYLOAD__ = payload;
     }
 
-    const clickTarget = (targetEl.tagName === "INPUT" && targetEl.parentElement && targetEl.parentElement.tagName === "LABEL")
-      ? targetEl.parentElement
-      : (interactiveChild || targetEl);
-
-    const clicked = dispatchClick(clickTarget);
-
-    // 2. React 16-18 controlled radio fallback: only if radio is STILL not checked after click
-    if (radio && !radio.checked) {
-      try {
-        if (radio._valueTracker && typeof radio._valueTracker.setValue === "function") {
-          radio._valueTracker.setValue(false);
-        }
-      } catch (e) {}
-
-      try {
-        const proto = (typeof window !== "undefined" && window.HTMLInputElement)
-          ? window.HTMLInputElement.prototype
-          : null;
-        const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "checked") : null;
-        if (descriptor && descriptor.set) {
-          descriptor.set.call(radio, true);
-        } else {
-          radio.checked = true;
-        }
-      } catch (e) {
-        radio.checked = true;
-      }
-
-      try {
-        radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-        radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-      } catch (e) {}
-    }
+    // Smart React option selection
+    const clicked = triggerOptionSelect(targetEl);
 
     return {
       success: clicked,
@@ -1071,6 +1158,7 @@
       const maxWaitMs = 4500;
       let waitedMs = 0;
       let postNext = null;
+      let retriedOptionSelect = false;
 
       while (waitedMs < maxWaitMs) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
@@ -1079,6 +1167,34 @@
         postNext = findReadyNext(customNextSelector);
         if (postNext) {
           break;
+        }
+
+        // Check if "Please select an option" validation error appeared, OR after 360ms of waiting, SUBMIT hasn't transitioned
+        const pageText = (doc.body ? doc.body.innerText || doc.body.textContent : doc.documentElement.textContent || "").toLowerCase();
+        const hasSelectOptionError = /please\s*select\s*an?\s*(?:option|answer)|select\s*an?\s*option/i.test(pageText);
+
+        if (!retriedOptionSelect && (hasSelectOptionError || waitedMs >= 360)) {
+          const lastOpt = (typeof window !== "undefined") ? window.__QUIZZY_LAST_SELECTED_OPTION__ : null;
+          if (lastOpt && typeof triggerOptionSelect === "function") {
+            retriedOptionSelect = true;
+            // Perform alternate deep click fallback on last selected option
+            triggerOptionSelect(lastOpt);
+            // Also directly click firstElementChild (circle) and lastElementChild (text) if present
+            if (lastOpt.firstElementChild) {
+              dispatchClick(lastOpt.firstElementChild);
+            }
+            if (lastOpt.lastElementChild && lastOpt.lastElementChild !== lastOpt.firstElementChild) {
+              dispatchClick(lastOpt.lastElementChild);
+            }
+            // Wait 200ms for React state commit
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            waitedMs += 200;
+            // Re-click submit button
+            const currentSub = doc.querySelector("button[type='submit'], input[type='submit'], button.btn-submit") || submitBtn;
+            if (currentSub && isVisible(currentSub) && !currentSub.disabled) {
+              dispatchClick(currentSub);
+            }
+          }
         }
       }
 
@@ -1155,11 +1271,11 @@
    * Main router for executing quiz actions.
    */
   function executeAction(payload) {
-    if (!payload || !payload.q_type) {
+    if (!payload || (!payload.q_type && !payload.question_type)) {
       return { success: false, error: "Payload missing q_type" };
     }
 
-    const qType = String(payload.q_type).toLowerCase().trim();
+    const qType = String(payload.q_type || payload.question_type).toLowerCase().trim();
 
     if (qType === "mcq") {
       return executeMcqAction(payload);
@@ -1209,12 +1325,14 @@
     findClasslessOptionElements,
     dispatchClick,
     findOptionElements,
+    triggerOptionSelect,
     executeMcqAction,
     executeTextAction,
     simulateDragDrop,
     executeOrderAction,
     clickNextButton,
     executeAction,
+    executeQuizAction: executeAction,
     isQuizZyInternalElement
   };
 

@@ -593,7 +593,7 @@
       <div class="hud-popover-row" style="border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 8px;">
         <label class="hud-checkbox-label">
           <input type="checkbox" id="hud-chk-strict">
-          <span>Allow Strict HIGH Agreement Only</span>
+          <span>Strict Mode: Pause on Tie-Breaker (Require Primary Agreement Only)</span>
         </label>
       </div>
     </div>
@@ -644,10 +644,12 @@
         set: (data, cb) => { if (cb) cb(); }
       };
 
-  // Restore strict agreement preference
+  // Restore strict agreement preference (default: false)
   storage.get(["quizzy_strict_agreement"], (res) => {
     if (chkStrict && res.quizzy_strict_agreement !== undefined) {
       chkStrict.checked = Boolean(res.quizzy_strict_agreement);
+    } else if (chkStrict) {
+      chkStrict.checked = false;
     }
   });
 
@@ -982,20 +984,54 @@
       return;
     }
 
+    const qType = (latestSolution.q_type || "mcq").toLowerCase();
+    let targetIdx = (typeof latestSolution.selected_index === "number" && latestSolution.selected_index >= 0)
+      ? latestSolution.selected_index
+      : null;
+
+    let syntheticLetter = "";
+    if (typeof latestSolution.letter === "string" && /^[A-F]$/i.test(latestSolution.letter.trim())) {
+      syntheticLetter = latestSolution.letter.trim().toUpperCase();
+    } else if (typeof latestSolution.canonical_key === "string" && /^[A-F]$/i.test(latestSolution.canonical_key.trim())) {
+      syntheticLetter = latestSolution.canonical_key.trim().toUpperCase();
+    } else if (typeof latestSolution.answer === "string" && /^[A-F]$/i.test(latestSolution.answer.trim())) {
+      syntheticLetter = latestSolution.answer.trim().toUpperCase();
+    }
+
+    if (targetIdx === null && syntheticLetter) {
+      targetIdx = syntheticLetter.charCodeAt(0) - 65;
+    }
+
+    const resolvedLetter = syntheticLetter || (targetIdx !== null ? String.fromCharCode(65 + targetIdx) : "");
+    const resolvedText = latestSolution.selected_text ||
+      (latestExtracted && Array.isArray(latestExtracted.options) && targetIdx !== null ? latestExtracted.options[targetIdx] : "") ||
+      (latestSolution.answer && !/^[A-F]$/i.test(String(latestSolution.answer).trim()) ? latestSolution.answer : "");
+
     const actionPayload = {
-      q_type: latestSolution.q_type || "mcq",
-      answer: latestSolution.answer,
-      selected_index: latestSolution.selected_index,
-      targetText: latestSolution.selected_text || (latestExtracted?.options?.[latestSolution.selected_index]),
+      question_type: qType,
+      q_type: qType,
+      targetIndex: targetIdx,
+      selected_index: targetIdx,
+      targetText: resolvedText,
+      selected_text: resolvedText,
+      answer: (qType === "mcq" && resolvedText) ? resolvedText : latestSolution.answer,
+      letter: resolvedLetter,
       ordered_indices: latestSolution.ordered_indices,
       ordered_texts: latestSolution.ordered_texts,
-      target_permutation: latestSolution.ordered_indices
+      target_permutation: latestSolution.ordered_indices,
+      permutation_indices: latestSolution.permutation_indices
     };
 
-    if (window.__QuizZyExecutor && typeof window.__QuizZyExecutor.executeQuizAction === "function") {
-      const res = window.__QuizZyExecutor.executeQuizAction(actionPayload);
-      if (callback) callback(res);
-      return;
+    const exec = window.__QuizZyExecutor || window.QuizZyExecutor;
+    if (exec && (typeof exec.executeQuizAction === "function" || typeof exec.executeAction === "function")) {
+      try {
+        const fn = exec.executeQuizAction || exec.executeAction;
+        const res = fn.call(exec, actionPayload);
+        if (callback) callback(res);
+        return;
+      } catch (err) {
+        console.error("[QuizZy HUD] Direct executor call failed:", err);
+      }
     }
 
     sendExtensionMessage({ action: "EXECUTE_ACTION", payload: actionPayload }, (res) => {
@@ -1004,8 +1040,9 @@
   }
 
   function clickNextOnPage(callback) {
-    if (window.__QuizZyExecutor && typeof window.__QuizZyExecutor.clickNextButton === "function") {
-      window.__QuizZyExecutor.clickNextButton().then((res) => {
+    const exec = window.__QuizZyExecutor || window.QuizZyExecutor;
+    if (exec && typeof exec.clickNextButton === "function") {
+      exec.clickNextButton().then((res) => {
         if (callback) callback(res);
       }).catch((err) => {
         if (callback) callback({ ok: false, error: err.message });

@@ -1095,6 +1095,145 @@ async function main() {
     throw new Error(`Expected option to be clicked with HUD mounted, got count ${opt0ClickCount}`);
   }
 
+  // Test 13: Cache-Hit Synthetic Letter [A] + Inner Circle/Label React Handler + "Please select an option" Recovery
+  let innerCircleClicked = 0;
+  let innerLabelClicked = 0;
+  const innerCircle0 = el("div", "sc-circle sc-kLLOBW", {});
+  const innerLabel0 = el("div", "sc-opt-label sc-iBPRYJ", {}, ["P(Flu|Cough) = 0.71, P(Cold|Cough) = 0.25"]);
+  innerCircle0.addEventListener("click", () => { innerCircleClicked++; });
+  innerLabel0.addEventListener("click", () => { innerLabelClicked++; });
+
+  const ccbpRow0 = el("div", "sc-opt-row sc-bczRLJ", {}, [innerCircle0, innerLabel0]);
+  const ccbpRow1 = el("div", "sc-opt-row sc-bczRLJ", {}, [
+    el("div", "sc-circle sc-kLLOBW", {}),
+    el("div", "sc-opt-label sc-iBPRYJ", {}, ["P(Flu|Cough) = 0.25, P(Cold|Cough) = 0.71"])
+  ]);
+  const ccbpRow2 = el("div", "sc-opt-row sc-bczRLJ", {}, [
+    el("div", "sc-circle sc-kLLOBW", {}),
+    el("div", "sc-opt-label sc-iBPRYJ", {}, ["P(Flu|Cough) = 0.50, P(Cold|Cough) = 0.50"])
+  ]);
+  const ccbpRow3 = el("div", "sc-opt-row sc-bczRLJ", {}, [
+    el("div", "sc-circle sc-kLLOBW", {}),
+    el("div", "sc-opt-label sc-iBPRYJ", {}, ["P(Flu|Cough) = 0.10, P(Cold|Cough) = 0.90"])
+  ]);
+
+  const validationErrorEl = el("p", "sc-error-msg", { style: "color: red;" }, ["Please select an option"]);
+
+  let submitClicked = 0;
+  let nextClicked = 0;
+  let submitBtnEl = el("button", "sc-btn-submit", { type: "submit" }, ["SUBMIT"]);
+  const actionsDiv = el("div", "sc-actions", {}, [submitBtnEl]);
+
+  submitBtnEl.addEventListener("click", () => {
+    submitClicked++;
+    // Simulate submit click rendering NEXT QUESTION
+    actionsDiv.childNodes = [];
+    const nextBtnEl = el("button", "sc-btn-next", { type: "button" }, ["NEXT QUESTION"]);
+    nextBtnEl.addEventListener("click", () => { nextClicked++; });
+    actionsDiv.appendChild(nextBtnEl);
+  });
+
+  const test13Doc = el("html", "", {}, [
+    el("head"),
+    el("body", "sc-body-app", {}, [
+      el("div", "sc-topbar", {}, [
+        el("span", "", {}, ["MCQ PRACTICE | BAYES THEOREM"]),
+        el("span", "", {}, ["QUESTIONS ATTEMPTED: 4/10"]),
+        el("span", "", {}, ["END PRACTICE"])
+      ]),
+      el("div", "sc-card-hash", {}, [
+        el("div", "sc-q-section", {}, [
+          el("p", "", {}, ["Given clinical tests with cough symptoms, calculate posterior probabilities:"])
+        ]),
+        el("div", "sc-opts-section", {}, [
+          ccbpRow0,
+          ccbpRow1,
+          ccbpRow2,
+          ccbpRow3
+        ]),
+        validationErrorEl,
+        actionsDiv
+      ])
+    ])
+  ]);
+  test13Doc.body = test13Doc.childNodes[1];
+  test13Doc.documentElement = test13Doc;
+  test13Doc.getElementById = (id) => test13Doc.querySelector('#' + id);
+  test13Doc.createElement = (tag) => new MockNode(tag);
+
+  const test13Sandbox = {
+    window: null,
+    document: test13Doc,
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1", cursor: "pointer" }),
+    Event: global.Event,
+    MouseEvent: global.MouseEvent,
+    PointerEvent: global.PointerEvent,
+    HTMLInputElement: global.HTMLInputElement,
+    HTMLTextAreaElement: global.HTMLTextAreaElement,
+    Date,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Set,
+    RegExp,
+    console,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id)
+  };
+  test13Sandbox.window = test13Sandbox;
+
+  // 1. Verify extractor excludes "Please select an option"
+  const test13Extracted = vm.runInNewContext(extractorCode, test13Sandbox);
+  if (!test13Extracted || !test13Extracted.success) {
+    throw new Error(`Test 13 extraction failed: ${JSON.stringify(test13Extracted)}`);
+  }
+  if (test13Extracted.options.length !== 4) {
+    throw new Error(`Expected exactly 4 options in Test 13, got ${test13Extracted.options.length}: ${JSON.stringify(test13Extracted.options)}`);
+  }
+  if (test13Extracted.options.some(opt => /please\s*select/i.test(opt))) {
+    throw new Error(`Validation text 'Please select an option' leaked into options list: ${JSON.stringify(test13Extracted.options)}`);
+  }
+  if (/please\s*select/i.test(test13Extracted.question)) {
+    throw new Error(`Validation text 'Please select an option' leaked into question stem!`);
+  }
+
+  // 2. Test executor selecting option 0 with cache-hit payload (letter "A", targetIndex 0)
+  const test13Executor = vm.runInNewContext(executorCode, test13Sandbox);
+  const cacheHitPayload = {
+    question_type: "mcq",
+    q_type: "mcq",
+    answer: "A",
+    selected_index: 0,
+    targetIndex: 0,
+    letter: "A",
+    targetText: "P(Flu|Cough) = 0.71, P(Cold|Cough) = 0.25",
+    selected_text: "P(Flu|Cough) = 0.71, P(Cold|Cough) = 0.25"
+  };
+
+  const test13McqRes = test13Executor.executeMcqAction(cacheHitPayload);
+  if (!test13McqRes || !test13McqRes.success) {
+    throw new Error(`Test 13 executeMcqAction failed: ${JSON.stringify(test13McqRes)}`);
+  }
+  if (test13McqRes.selected_index !== 0) {
+    throw new Error(`Expected selected_index 0 in Test 13, got ${test13McqRes.selected_index}`);
+  }
+  if (innerCircleClicked === 0 && innerLabelClicked === 0) {
+    throw new Error(`Neither inner circle nor inner label received click event in custom React row!`);
+  }
+
+  // 3. Test clickNextButton transitions SUBMIT -> NEXT QUESTION cleanly
+  const test13NextRes = await test13Executor.clickNextButton();
+  if (!test13NextRes || !test13NextRes.success || test13NextRes.step !== "submit_then_next") {
+    throw new Error(`Test 13 clickNextButton failed: ${JSON.stringify(test13NextRes)}`);
+  }
+  if (submitClicked !== 1 || nextClicked !== 1) {
+    throw new Error(`Expected submitClicked === 1 and nextClicked === 1, got submit=${submitClicked}, next=${nextClicked}`);
+  }
+
   console.log("NODE_RUNTIME_TESTS_OK");
   process.exit(0);
 }

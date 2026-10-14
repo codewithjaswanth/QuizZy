@@ -335,6 +335,11 @@
       return true;
     }
 
+    // Validation error messages (e.g. learning.ccbp.in red error banner)
+    if (/^(?:please\s*select\s*(?:an?\s*)?(?:option|answer)|select\s*(?:an?\s*)?(?:option|answer))$/i.test(t)) {
+      return true;
+    }
+
     // Top-bar navigation, controls, scores, instructions, CCBP student ID & disclaimers
     if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|id\s*:\s*[A-Za-z0-9]+)/i.test(t)) {
       return true;
@@ -359,12 +364,13 @@
 
   /**
    * Helper that checks if an element or any of its descendants is or contains an action button
-   * (e.g. SUBMIT, SHOW ANSWER, SKIP) or a quiz footer/disclaimer (e.g. "If you skip...").
+   * (e.g. SUBMIT, SHOW ANSWER, SKIP) or a quiz footer/disclaimer (e.g. "If you skip...")
+   * or a validation error message (e.g. "Please select an option").
    */
   function containsActionButtonOrFooter(el) {
     if (!el || el.nodeType !== 1) return false;
-    const actionPattern = /^(?:SHOW ANSWER|HIDE ANSWER|SUBMIT|SUBMIT ANSWER|SKIP|NEXT|NEXT QUESTION|PREVIOUS|END PRACTICE|PRACTICE INSTRUCTIONS|HINT|REPORT|CHECK|FINISH|VIEW REPORT)$/;
-    const footerKeywords = /(?:IF YOU SKIP, YOU CAN ATTEMPT|QUESTIONS ATTEMPTED|END PRACTICE|PRACTICE INSTRUCTIONS)/;
+    const actionPattern = /^(?:SHOW ANSWER|HIDE ANSWER|SUBMIT|SUBMIT ANSWER|SKIP|NEXT|NEXT QUESTION|PREVIOUS|END PRACTICE|PRACTICE INSTRUCTIONS|HINT|REPORT|CHECK|FINISH|VIEW REPORT|PLEASE SELECT AN OPTION|PLEASE SELECT AN ANSWER|SELECT AN OPTION|SELECT AN ANSWER)$/;
+    const footerKeywords = /(?:IF YOU SKIP, YOU CAN ATTEMPT|QUESTIONS ATTEMPTED|END PRACTICE|PRACTICE INSTRUCTIONS|PLEASE SELECT AN OPTION|PLEASE SELECT AN ANSWER|SELECT AN OPTION)/;
 
     const elText = cleanText(el.textContent || el.innerText || "").toUpperCase();
     if (actionPattern.test(elText) || footerKeywords.test(elText)) {
@@ -749,52 +755,88 @@
     }
 
     // Outermost content blocks discovery inside quiz card strictly preceding optionElements[0]
+    // Fixes multi-block Assertion (A) & Reason (R) and multi-statement questions on learning.ccbp.in
     if (!question) {
-      const cardContainers = (quizCard ? [quizCard] : Array.from(doc.querySelectorAll(
+      let cardContainers = (quizCard ? [quizCard] : Array.from(doc.querySelectorAll(
         "[class*='question-card'], [class*='questionCard'], [class*='questionContainer'], [class*='question-container'], [class*='quiz-card'], [class*='quizCard'], [class*='quiz-container'], [class*='quizContainer'], [class*='practice-card'], [class*='problem-card'], [class*='mcq-card'], [class*='card'], .card, main, [role='main'], form"
       ))).filter(isVisible);
+
+      // If no card container found yet but options exist, walk up from first option to find common card
+      const firstOpt = (optionElements && optionElements.length > 0) ? optionElements[0] : null;
+      if (cardContainers.length === 0 && firstOpt) {
+        let curr = firstOpt.parentElement;
+        while (curr && curr !== doc.body && curr !== doc.documentElement) {
+          if (isQuizZyInternalElement(curr)) break;
+          const allDesc = Array.from(curr.querySelectorAll("*"));
+          if (allDesc.indexOf(firstOpt) > 0) {
+            cardContainers = [curr];
+            break;
+          }
+          curr = curr.parentElement;
+        }
+      }
 
       for (const card of cardContainers) {
         if (isExplanationOrFeedback(card)) continue;
 
         const allDescendants = Array.from(card.querySelectorAll("*"));
-        const firstOpt = (optionElements && optionElements.length > 0) ? optionElements[0] : null;
         const firstOptIndex = firstOpt ? allDescendants.indexOf(firstOpt) : -1;
+
+        // Visual position boundary if getBoundingClientRect is available
+        let firstOptTop = Infinity;
+        if (firstOpt && typeof firstOpt.getBoundingClientRect === "function") {
+          const r = firstOpt.getBoundingClientRect();
+          if (r && (r.top !== 0 || r.bottom !== 0)) {
+            firstOptTop = r.top;
+          }
+        }
 
         // Elements inside card strictly preceding firstOpt in pre-order traversal
         const precedingElements = (firstOptIndex !== -1)
           ? allDescendants.slice(0, firstOptIndex).filter(el => !el.contains(firstOpt))
           : allDescendants;
 
-        // Filter to the outermost content blocks among preceding elements
-        const outermostBlocks = [];
+        // Filter to all visible content blocks (p, div, span, pre, code, table, li, h1-h4)
+        const selectedBlocks = [];
         for (const el of precedingElements) {
           if (!isVisible(el)) continue;
           if (containsActionButtonOrFooter(el)) continue;
           if (isExplanationOrFeedback(el)) continue;
 
-          // If an ancestor is already selected in outermostBlocks, skip this descendant to avoid duplication & missing inline tokens
-          const hasSelectedAncestor = outermostBlocks.some(parent => parent.contains(el));
+          // Check visual layout position: must appear above the first option element
+          if (firstOptTop !== Infinity && typeof el.getBoundingClientRect === "function") {
+            const elRect = el.getBoundingClientRect();
+            if (elRect && (elRect.top !== 0 || elRect.bottom !== 0) && elRect.bottom > firstOptTop + 8) {
+              continue;
+            }
+          }
+
+          // If an ancestor is already selected in selectedBlocks, skip descendant to avoid duplicate text
+          const hasSelectedAncestor = selectedBlocks.some(parent => parent.contains(el));
           if (hasSelectedAncestor) continue;
 
           const tag = (el.tagName || "").toLowerCase();
           if (tag === "button" || tag === "input" || tag === "hr" || tag === "br" || tag === "style" || tag === "script") continue;
           if (el.querySelector && el.querySelector("input[type='radio'], [role='radio'], [class*='option'], button")) continue;
 
-          // If this is a container holding multiple block-level children, skip it so its individual blocks are selected
-          if (tag !== "pre" && tag !== "code" && el.querySelector && el.querySelector("p, h1, h2, h3, h4, pre, code, table")) {
+          // If this element contains child blocks (p, div, span, etc.) that themselves have text,
+          // prefer selecting the more granular child blocks rather than the whole container
+          if (tag !== "pre" && tag !== "code" && el.querySelector && el.querySelector("p, h1, h2, h3, h4, pre, code, table, li")) {
             continue;
           }
 
           const isCode = tag === "pre" || tag === "code";
           const txt = getCleanVisibleText(el, isCode);
-          if (txt.length >= 8 && !isHeaderOrNavText(txt)) {
-            outermostBlocks.push(el);
+          if (txt.length >= 3 && !isHeaderOrNavText(txt)) {
+            // Exclude header boilerplate
+            if (!/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|score\s*:|questions?\s*attempted)/i.test(txt)) {
+              selectedBlocks.push(el);
+            }
           }
         }
 
         const stemParts = [];
-        for (const block of outermostBlocks) {
+        for (const block of selectedBlocks) {
           const tag = (block.tagName || "").toLowerCase();
           const isCode = tag === "pre" || tag === "code";
           if (isCode) {
@@ -812,14 +854,16 @@
             }
           } else {
             const txt = getCleanVisibleText(block, false);
-            if (txt.length >= 8 && !isHeaderOrNavText(txt) && !stemParts.some(p => p.includes(txt))) {
-              stemParts.push(txt);
+            if (txt.length >= 3 && !isHeaderOrNavText(txt)) {
+              if (!stemParts.includes(txt) && !stemParts.some(p => p.includes(txt))) {
+                stemParts.push(txt);
+              }
             }
           }
         }
 
         if (stemParts.length > 0) {
-          question = stemParts.join("\n\n").trim();
+          question = stemParts.join("\n").trim();
           matchedSelectors.question = "card-stem-multiblock";
           break;
         }

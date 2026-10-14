@@ -70,7 +70,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const inputMaxSteps = document.getElementById("input-max-steps");
   const inputStepDelay = document.getElementById("input-step-delay");
   const selectOrderMode = document.getElementById("select-order-mode");
-  const chkRequireHigh = document.getElementById("chk-require-high");
+  const chkRequireHigh = document.getElementById("chk-require-high") || document.getElementById("chk-high-agree-only");
   const btnApplyOnce = document.getElementById("btn-apply-once");
   const btnStartAuto = document.getElementById("btn-start-auto");
   const btnKillSwitch = document.getElementById("btn-kill-switch");
@@ -372,6 +372,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (typeof res.auto_require_high === "boolean" && chkRequireHigh) {
         chkRequireHigh.checked = res.auto_require_high;
+      } else if (chkRequireHigh) {
+        chkRequireHigh.checked = false;
       }
 
       updateAllowlistUI();
@@ -1125,11 +1127,38 @@ document.addEventListener("DOMContentLoaded", () => {
         setTelemetryState("RUNNING", `[Step ${currentStepNum}] Applying answer to DOM...`);
 
         const selectors = getCustomSelectors();
+        const qType = (solution.q_type || "mcq").toLowerCase();
+        let targetIdx = (typeof solution.selected_index === "number" && solution.selected_index >= 0)
+          ? solution.selected_index
+          : null;
+
+        let syntheticLetter = "";
+        if (typeof solution.letter === "string" && /^[A-F]$/i.test(solution.letter.trim())) {
+          syntheticLetter = solution.letter.trim().toUpperCase();
+        } else if (typeof solution.canonical_key === "string" && /^[A-F]$/i.test(solution.canonical_key.trim())) {
+          syntheticLetter = solution.canonical_key.trim().toUpperCase();
+        } else if (typeof solution.answer === "string" && /^[A-F]$/i.test(solution.answer.trim())) {
+          syntheticLetter = solution.answer.trim().toUpperCase();
+        }
+
+        if (targetIdx === null && syntheticLetter) {
+          targetIdx = syntheticLetter.charCodeAt(0) - 65;
+        }
+
+        const resolvedLetter = syntheticLetter || (targetIdx !== null ? String.fromCharCode(65 + targetIdx) : "");
+        const resolvedText = solution.selected_text ||
+          (extracted && Array.isArray(extracted.options) && targetIdx !== null ? extracted.options[targetIdx] : "") ||
+          (solution.answer && !/^[A-F]$/i.test(String(solution.answer).trim()) ? solution.answer : "");
+
         const actionPayload = {
-          q_type: solution.q_type,
-          selected_index: solution.selected_index,
-          selected_text: solution.selected_text,
-          answer: solution.answer,
+          question_type: qType,
+          q_type: qType,
+          targetIndex: targetIdx,
+          selected_index: targetIdx,
+          targetText: resolvedText,
+          selected_text: resolvedText,
+          answer: (qType === "mcq" && resolvedText) ? resolvedText : solution.answer,
+          letter: resolvedLetter,
           permutation_indices: solution.permutation_indices,
           ordered_texts: solution.ordered_texts,
           optionsSelector: selectors.optionsSelector,

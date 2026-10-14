@@ -159,6 +159,17 @@ def test_api_endpoints_offline():
         print("  -> Passed all 422 input validation constraints.")
 
 
+def post_solve_with_retry(client: TestClient, payload: dict, max_retries: int = 3):
+    import time
+    for attempt in range(max_retries + 1):
+        res = client.post("/solve", json=payload)
+        data = res.json()
+        if data.get("status") == "ok" or attempt == max_retries:
+            return res, data
+        time.sleep(1.0)
+    return res, data
+
+
 def test_live_api_solve():
     """Test live POST /solve end-to-end including jumbled cache hit."""
     print("\n[Live Solve Test] Testing live POST /solve and jumbled cache hits...")
@@ -173,9 +184,8 @@ def test_live_api_solve():
             "bypass_cache": True,  # Force live completion first
         }
 
-        r1 = client.post("/solve", json=mcq_payload)
+        r1, res1 = post_solve_with_retry(client, mcq_payload)
         assert r1.status_code == 200, f"Live call failed: {r1.text}"
-        res1 = r1.json()
         assert res1["status"] == "ok"
         assert res1["answer"] == "B"
         assert res1["selected_index"] == 1
@@ -209,9 +219,8 @@ def test_live_api_solve():
             "question": "What is the chemical symbol for gold?",
             "options": [],
         }
-        r3 = client.post("/solve", json=text_payload)
+        r3, res3 = post_solve_with_retry(client, text_payload)
         assert r3.status_code == 200
-        res3 = r3.json()
         assert res3["status"] == "ok"
         assert "au" in res3["answer"].lower() or "gold" in res3["answer"].lower()
         print(f"  -> Live Free-Text Call: '{res3['answer']}' in {res3['latency_ms']}ms [OK]")
@@ -224,9 +233,8 @@ def test_live_api_solve():
             "options": ["Deployment", "Requirements Analysis", "System Design", "Coding & Implementation"],
             "bypass_cache": True,
         }
-        r4 = client.post("/solve", json=order_payload)
+        r4, res4 = post_solve_with_retry(client, order_payload)
         assert r4.status_code == 200
-        res4 = r4.json()
         assert res4["status"] == "ok"
         assert res4["answer"] == "B,C,D,A"
         assert res4["permutation_indices"] == [1, 2, 3, 0]

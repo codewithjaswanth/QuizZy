@@ -65,6 +65,8 @@ class HealthResponse(BaseModel):
     cache_entries: int
     searxng_enabled: bool = True
     searxng_circuit_open: bool = False
+    openrouter_keys_loaded: int = 1
+    active_fallback_pool: List[str] = Field(default_factory=list)
 
 
 class StatsResponse(BaseModel):
