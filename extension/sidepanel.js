@@ -1082,9 +1082,9 @@ document.addEventListener("DOMContentLoaded", () => {
               if (!isAutoRunning || killSwitchTriggered) return;
 
               if (!nextRes || !nextRes.success) {
-                // If Next button was not found, assume end of quiz
                 isAutoRunning = false;
-                setTelemetryState("COMPLETED", `[Step ${autoStepIndex}] Next button not found. Quiz completed.`);
+                const err = nextRes && nextRes.error ? nextRes.error : "Next button not found.";
+                setTelemetryState("STOPPED_ERROR", `[Step ${autoStepIndex}] ${err}`);
                 if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
                 if (btnStartAuto) btnStartAuto.classList.remove("hidden");
                 return;
@@ -1127,7 +1127,15 @@ document.addEventListener("DOMContentLoaded", () => {
         customNextSelector: nextSelector
       }, (nextRes) => {
         if (!isAutoRunning || killSwitchTriggered) return;
-        if (nextRes && (nextRes.step === "quiz_completed" || nextRes.action === "quiz_completed")) {
+        if (!nextRes || !nextRes.success) {
+          isAutoRunning = false;
+          const err = nextRes && nextRes.error ? nextRes.error : "Next button not found.";
+          setTelemetryState("STOPPED_ERROR", `[Step ${autoStepIndex}] ${err}`);
+          if (btnKillSwitch) btnKillSwitch.classList.add("hidden");
+          if (btnStartAuto) btnStartAuto.classList.remove("hidden");
+          return;
+        }
+        if (nextRes.step === "quiz_completed" || nextRes.action === "quiz_completed") {
           isAutoRunning = false;
           setTelemetryState("COMPLETED", `[Step ${autoStepIndex}] Quiz completed! All questions answered.`);
           if (btnKillSwitch) btnKillSwitch.classList.add("hidden");

@@ -66,14 +66,28 @@ def test_extractor_math_and_header_filtering():
     assert "MJX_Assistive_MathML" in code, "Must filter .MJX_Assistive_MathML duplicate text"
     assert "annotation" in code, "Must filter annotation / annotation-xml tags"
 
-    # 2. Fractions preservation in decorative prefix stripper
+    # 2. Fractions and algebra preservation in decorative prefix stripper
     assert "stripDecorativePrefix" in code
-    # Verify regex does not strip '1/6' or '2/36'
-    strip_regex = re.compile(r"^(?:[A-Za-z][\.\)\:\-]\s*|\([A-Za-z0-9]\)\s*|[0-9]+[\.\)\:\-]\s*|[\u2022\u25E6\u25AA\u2023]\s*)")
+    strip_regex = re.compile(
+        r"^(?:"
+        r"[A-Fa-f][\.\)\:]\s+"
+        r"|\([A-Fa-f0-9]{1,2}\)\s+"
+        r"|\[[A-Fa-f0-9]{1,2}\]\s+"
+        r"|[0-9]{1,2}[\.\)]\s+"
+        r"|[\u2022\u25E6\u25AA\u2023]\s*"
+        r")"
+    )
+    assert strip_regex.sub("", "1 - 1/6") == "1 - 1/6", "Prefix stripper must NOT strip '1 - 1/6'!"
+    assert strip_regex.sub("", "1 - P(A)") == "1 - P(A)", "Prefix stripper must NOT strip '1 - P(A)'!"
+    assert strip_regex.sub("", "A - B") == "A - B", "Prefix stripper must NOT strip 'A - B'!"
+    assert strip_regex.sub("", "n - 1") == "n - 1", "Prefix stripper must NOT strip 'n - 1'!"
+    assert strip_regex.sub("", "x : y") == "x : y", "Prefix stripper must NOT strip 'x : y'!"
     assert strip_regex.sub("", "1/6") == "1/6", "Prefix stripper must NOT strip '1/6'!"
     assert strip_regex.sub("", "2/36") == "2/36", "Prefix stripper must NOT strip '2/36'!"
     assert strip_regex.sub("", "A. 1/6") == "1/6", "Prefix stripper must strip 'A. ' from 'A. 1/6'"
     assert strip_regex.sub("", "1) 1/6") == "1/6", "Prefix stripper must strip '1) ' from '1) 1/6'"
+    assert strip_regex.sub("", "B) 1 - 1/6") == "1 - 1/6", "Prefix stripper must strip 'B) ' from 'B) 1 - 1/6'"
+    assert strip_regex.sub("", "C: A - B") == "A - B", "Prefix stripper must strip 'C: ' from 'C: A - B'"
 
     # 3. Header & nav blacklist
     assert "isHeaderOrNavText" in code
@@ -197,11 +211,30 @@ class MockNode {
       this.parentElement = null;
       this.parentNode = null;
       this.disabled = false;
-      this.checked = false;
+      this._checked = false;
       this.value = "";
       this._text = "";
       this.listeners = {};
     }
+  }
+
+  get checked() {
+    return Boolean(this._checked);
+  }
+
+  set checked(v) {
+    this._checked = Boolean(v);
+  }
+
+  get firstElementChild() {
+    return this.childNodes.find(c => c.nodeType === 1) || null;
+  }
+
+  get previousElementSibling() {
+    if (!this.parentElement) return null;
+    const sibs = this.parentElement.children;
+    const idx = sibs.indexOf(this);
+    return idx > 0 ? sibs[idx - 1] : null;
   }
 
   get classList() {
@@ -226,11 +259,15 @@ class MockNode {
   getAttribute(attr) {
     if (attr === "class") return this.className;
     if (attr === "disabled" && this.disabled) return "";
+    if (attr === "value") return this.value;
+    if (attr === "type") return this.type || this.attributes["type"] || null;
     return this.attributes[attr] || null;
   }
 
   hasAttribute(attr) {
     if (attr === "class") return Boolean(this.className);
+    if (attr === "value") return Boolean(this.value);
+    if (attr === "type") return Boolean(this.type || this.attributes["type"]);
     return attr in this.attributes;
   }
 
@@ -238,6 +275,8 @@ class MockNode {
     if (attr === "class") {
       this.className = String(val);
     } else {
+      if (attr === "value") this.value = String(val);
+      if (attr === "type") this.type = String(val);
       this.attributes[attr] = String(val);
     }
   }
@@ -416,8 +455,8 @@ function el(tag, className = "", attrs = {}, children = []) {
   node.className = className;
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "disabled") node.disabled = Boolean(v);
-    else if (k === "type") node.type = String(v);
-    else if (k === "value") node.value = String(v);
+    else if (k === "type") { node.type = String(v); node.setAttribute(k, v); }
+    else if (k === "value") { node.value = String(v); node.setAttribute(k, v); }
     else node.setAttribute(k, v);
   }
   for (const c of children) {
@@ -431,13 +470,28 @@ function el(tag, className = "", attrs = {}, children = []) {
 }
 
 const doc = el("html", "", {}, [el("head"), el("body")]);
+doc.body = doc.childNodes[1];
 global.document = doc;
 
 const extractor = require(path.resolve(process.cwd(), "extension/extractor.js"));
 const executor = require(path.resolve(process.cwd(), "extension/executor.js"));
 
 async function main() {
-  // Test 1: Real KaTeX DOM
+  // Test 1: Nested KaTeX & Compound Fractions
+  if (extractor.normalizeTeX("\\frac{2^{3}}{6}") !== "2^3/6") {
+    throw new Error(`Expected '2^3/6', got '${extractor.normalizeTeX("\\frac{2^{3}}{6}")}'`);
+  }
+  if (extractor.normalizeTeX("\\frac{n+1}{2}") !== "(n+1)/2") {
+    throw new Error(`Expected '(n+1)/2', got '${extractor.normalizeTeX("\\frac{n+1}{2}")}'`);
+  }
+  if (extractor.normalizeTeX("\\frac{1}{6}") !== "1/6") {
+    throw new Error(`Expected '1/6', got '${extractor.normalizeTeX("\\frac{1}{6}")}'`);
+  }
+  if (extractor.normalizeTeX("\\frac{\\sqrt{3}}{2}") !== "sqrt(3)/2") {
+    throw new Error(`Expected 'sqrt(3)/2', got '${extractor.normalizeTeX("\\frac{\\sqrt{3}}{2}")}'`);
+  }
+
+  // Real KaTeX DOM
   const katexContainer = el("div", "katex", {}, [
     el("span", "katex-mathml", {}, [
       el("annotation", "", { encoding: "application/x-tex" }, ["\\frac{1}{6}"])
@@ -462,8 +516,15 @@ async function main() {
     throw new Error(`Expected KaTeX option '1/6', got '${cleanOptionText}'`);
   }
 
-  // Test 2: Tricky decimals, ratios, and fractions
+  // Test 2: Probability & Set-Theory Prefix Safety
   const prefixCases = [
+    { in: "1 - 1/6", exp: "1 - 1/6" },
+    { in: "1 - P(A)", exp: "1 - P(A)" },
+    { in: "A - B", exp: "A - B" },
+    { in: "n - 1", exp: "n - 1" },
+    { in: "x - 1 = 0", exp: "x - 1 = 0" },
+    { in: "A : B", exp: "A : B" },
+    { in: "x : y", exp: "x : y" },
     { in: "1/6", exp: "1/6" },
     { in: "2/36", exp: "2/36" },
     { in: "1.5", exp: "1.5" },
@@ -474,8 +535,10 @@ async function main() {
     { in: "A", exp: "A" },
     { in: "(A) 1/6", exp: "1/6" },
     { in: "A. 1.5", exp: "1.5" },
+    { in: "B) 1 - 1/6", exp: "1 - 1/6" },
     { in: "1) 1:6", exp: "1:6" },
-    { in: "D - 0.25", exp: "0.25" }
+    { in: "C: A - B", exp: "A - B" },
+    { in: "D. 0.25", exp: "0.25" }
   ];
   for (const tc of prefixCases) {
     const res = extractor.stripDecorativePrefix(tc.in);
@@ -484,43 +547,96 @@ async function main() {
     }
   }
 
-  // Test 3: Declarative Python code block & explanation exclusion
+  // Test 3: Multi-Line Python Indentation & Nested Explanation Exclusion
   const quizCard = el("div", "quiz-card", {}, [
     el("div", "question-stem", {}, [
       el("p", "", {}, ["Consider the following Python code snippet. Select the correct output."]),
       el("pre", "", {}, [
-        el("code", "", {}, ["def compute(x):\n    return x * 2\nprint(compute(5))"])
+        el("code", "", {}, ["def foo():\n    return 42\nprint(foo())"])
       ])
     ]),
     el("div", "options-list", {}, [
-      el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " 10"]),
-      el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " 5"]),
+      el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " 42"]),
       el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " None"]),
       el("label", "option-item", {}, [el("input", "", { type: "radio", name: "p1" }), " Error"])
     ]),
-    el("div", "explanation-drawer", {}, [
-      el("h3", "", {}, ["EXPLANATION"]),
-      el("p", "", {}, ["The function multiplies 5 by 2 and returns 10."])
+    el("div", "explanation-container", {}, [
+      el("h4", "", {}, ["Explanation:"]),
+      el("p", "", {}, ["The probability of rolling 6 is 1/6 and foo returns 42."])
     ])
   ]);
   doc.childNodes[1].childNodes = [];
   doc.childNodes[1].appendChild(quizCard);
 
   const quizResult = extractor.extractQuizFromDom();
-  if (!quizResult.question.includes("Consider the following Python code snippet")) {
-    throw new Error("Question prompt paragraph missing!");
+  if (!quizResult.success) {
+    throw new Error(`Extraction failed: ${quizResult.error}`);
   }
-  if (!quizResult.question.includes("def compute(x):")) {
-    throw new Error("<pre><code> block code was not concatenated into question!");
+  if (!quizResult.question.includes("def foo():\n    return 42")) {
+    throw new Error(`Code indentation/newline was destroyed! Got:\n${quizResult.question}`);
   }
-  if (quizResult.question.includes("EXPLANATION") || quizResult.question.includes("multiplies 5 by 2")) {
-    throw new Error("Post-submit explanation polluted the extracted question text!");
+  if (quizResult.question.includes("Explanation") || quizResult.question.includes("rolling 6")) {
+    throw new Error(`Post-submit nested explanation leaked into question! Got:\n${quizResult.question}`);
   }
-  if (quizResult.options.length !== 4 || quizResult.options[0] !== "10") {
+  if (quizResult.options.length !== 3 || quizResult.options[0] !== "42") {
     throw new Error(`Options mismatch: ${JSON.stringify(quizResult.options)}`);
   }
 
-  // Test 4: Async two-step Submit -> 900ms delayed Next question button polling
+  // Test 4: CSS-Hidden Radio Input with Visible Label
+  const hiddenRadioCard = el("div", "quiz-card", {}, [
+    el("div", "question-stem", {}, [
+      el("p", "", {}, ["What is the capital of France?"])
+    ]),
+    el("div", "options-list", {}, [
+      el("label", "option-card", {}, [
+        el("input", "", { type: "radio", name: "q2", value: "Paris", style: "display: none;" }),
+        " Paris"
+      ]),
+      el("label", "option-card", {}, [
+        el("input", "", { type: "radio", name: "q2", value: "London", style: "display: none;" }),
+        " London"
+      ]),
+      el("label", "option-card", {}, [
+        el("input", "", { type: "radio", name: "q2", value: "Berlin", style: "display: none;" }),
+        " Berlin"
+      ])
+    ])
+  ]);
+  doc.childNodes[1].childNodes = [];
+  doc.childNodes[1].appendChild(hiddenRadioCard);
+
+  const extractedHidden = extractor.extractQuizFromDom();
+  if (!extractedHidden.success || extractedHidden.options.length !== 3) {
+    throw new Error(`Failed to extract options with CSS-hidden radio inputs: ${JSON.stringify(extractedHidden)}`);
+  }
+  if (extractedHidden.options[0] !== "Paris") {
+    throw new Error(`Expected first option 'Paris', got '${extractedHidden.options[0]}'`);
+  }
+
+  const execResult = executor.executeMcqAction({ selected_index: 0 });
+  if (!execResult.success) {
+    throw new Error(`executeMcqAction failed on CSS-hidden radio: ${JSON.stringify(execResult)}`);
+  }
+  const parisRadio = hiddenRadioCard.querySelector("input[value='Paris']");
+  if (!parisRadio || !parisRadio.checked) {
+    throw new Error("CSS-hidden radio was not checked after executeMcqAction!");
+  }
+
+  // Test 5: Auto-Mode Completion Detection (QUESTIONS ATTEMPTED: 15/15)
+  const completionContainer = el("div", "quiz-summary", {}, [
+    el("div", "stats", {}, ["QUESTIONS ATTEMPTED: 15/15"]),
+    el("h2", "", {}, ["Practice Completed"]),
+    el("button", "btn-report", { type: "button" }, ["View Report"])
+  ]);
+  doc.childNodes[1].childNodes = [];
+  doc.childNodes[1].appendChild(completionContainer);
+
+  const completedResult = await executor.clickNextButton();
+  if (!completedResult.ok || completedResult.step !== "quiz_completed") {
+    throw new Error(`Expected step 'quiz_completed', got '${JSON.stringify(completedResult)}'`);
+  }
+
+  // Test 6: Async two-step Submit -> 300ms delayed Next Question
   const actionContainer = el("div", "actions", {}, [
     el("button", "btn-submit", { type: "button" }, ["Submit"])
   ]);
@@ -532,18 +648,15 @@ async function main() {
     setTimeout(() => {
       const nextBtn = el("button", "btn-next", { type: "button" }, ["Next Question"]);
       actionContainer.appendChild(nextBtn);
-    }, 900);
+    }, 300);
   });
 
   const nextResult = await executor.clickNextButton();
-  if (!nextResult.ok || !nextResult.success) {
-    throw new Error(`clickNextButton failed: ${JSON.stringify(nextResult)}`);
+  if (!nextResult.ok || nextResult.step !== "submit_then_next") {
+    throw new Error(`Expected step 'submit_then_next', got '${JSON.stringify(nextResult)}'`);
   }
-  if (nextResult.step !== "submit_then_next") {
-    throw new Error(`Expected step 'submit_then_next', got '${nextResult.step}'`);
-  }
-  if (nextResult.waited_ms < 850) {
-    throw new Error(`Expected polling wait >= 850ms, got ${nextResult.waited_ms}ms`);
+  if (nextResult.waited_ms < 240) {
+    throw new Error(`Expected wait >= 240ms, got ${nextResult.waited_ms}ms`);
   }
 
   console.log("NODE_RUNTIME_TESTS_OK");

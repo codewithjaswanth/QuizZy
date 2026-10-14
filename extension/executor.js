@@ -91,6 +91,16 @@
   }
 
   /**
+   * Helper that checks if either the radio input or its container label/card is visible.
+   * Crucial for React apps where <input type="radio"> is hidden via CSS while its <label> is visible.
+   */
+  function isRadioOrOptionVisible(radioEl, containerEl) {
+    if (radioEl && isVisible(radioEl)) return true;
+    if (containerEl && isVisible(containerEl)) return true;
+    return false;
+  }
+
+  /**
    * Finds option elements using custom selector or deterministic heuristics.
    */
   function findOptionElements(customSelector) {
@@ -102,18 +112,18 @@
       if (customMatches.length > 0) return customMatches;
     }
 
-    // Check for radio button groups
-    const radioInputs = Array.from(doc.querySelectorAll("input[type='radio']")).filter(isVisible);
-    if (radioInputs.length >= 2 && radioInputs.length <= 10) {
-      const radioRows = radioInputs.map((r) => {
-        const lbl = r.closest("label") || (r.id ? doc.querySelector(`label[for="${r.id}"]`) : null);
-        if (lbl && isVisible(lbl)) return lbl;
-        const row = r.closest("[class*='option'], [class*='choice'], [class*='radio'], li, tr") || r.parentElement;
-        return (row && isVisible(row)) ? row : r;
-      });
-      if (radioRows.length >= 2 && radioRows.length <= 10) {
-        return radioRows;
+    // Check for radio button groups (supporting CSS-hidden radio inputs with visible labels)
+    const allRadios = Array.from(doc.querySelectorAll("input[type='radio']"));
+    const radioRows = [];
+    for (const r of allRadios) {
+      const lbl = r.closest("label") || (r.id ? doc.querySelector(`label[for="${r.id}"]`) : null);
+      const row = lbl || r.closest("[class*='option'], [class*='choice'], [class*='radio'], li, tr") || r.parentElement;
+      if (isRadioOrOptionVisible(r, row)) {
+        radioRows.push(row || r);
       }
+    }
+    if (radioRows.length >= 2 && radioRows.length <= 10) {
+      return radioRows;
     }
 
     const optionHeuristics = [
@@ -507,6 +517,35 @@
       };
     }
 
+    function isQuizCompleted(d) {
+      if (!d) return false;
+      const root = d.body || d;
+      const bodyText = root.innerText || root.textContent || "";
+
+      // 1. Check "QUESTIONS ATTEMPTED: X/Y" where X === Y and X > 0
+      const match = bodyText.match(/questions?\s*attempted\s*:\s*(\d+)\s*\/\s*(\d+)/i);
+      if (match && match[1] && match[2]) {
+        const attempted = parseInt(match[1], 10);
+        const total = parseInt(match[2], 10);
+        if (total > 0 && attempted >= total) {
+          return true;
+        }
+      }
+
+      // 2. Check summary screen or completion banner
+      if (/(?:quiz\s*completed|practice\s*completed|assessment\s*completed|all\s*questions?\s*(?:attempted|answered)|view\s*report|view\s*summary|quiz\s*summary|practice\s*summary)/i.test(bodyText)) {
+        return true;
+      }
+
+      // 3. Check for finish / view report buttons
+      const btns = Array.from(d.querySelectorAll("button, a.btn, [role='button']")).filter(isVisible);
+      if (btns.some(b => /^(?:finish|view\s*report|view\s*results|review\s*test)\b/i.test(cleanText(b.innerText || b.textContent || b.value)))) {
+        return true;
+      }
+
+      return false;
+    }
+
     // (B) If not, check if a SUBMIT button is present (two-step submit -> next)
     const allButtons = Array.from(doc.querySelectorAll(
       "button, a.btn, [role='button'], input[type='button'], input[type='submit']"
@@ -547,25 +586,39 @@
       }
 
       // If no NEXT button rendered after submit within maxWaitMs, check if quiz completed
-      const bodyText = doc.body ? (doc.body.innerText || doc.body.textContent || "") : "";
-      const isCompleted = /(?:questions?\s*attempted\s*:\s*(\d+)\s*\/\s*\1|quiz\s*completed|practice\s*completed|all\s*questions?\s*(?:attempted|answered))/i.test(bodyText);
+      if (isQuizCompleted(doc)) {
+        return {
+          ok: true,
+          success: true,
+          step: "quiz_completed",
+          action: "quiz_completed",
+          button_text: submitText,
+          waited_ms: waitedMs,
+          reason: "All questions attempted and quiz completed."
+        };
+      }
+
+      // If not completed, return next_timeout with descriptive error to prevent false completion
+      const currentSubmit = doc.querySelector("button[type='submit'], input[type='submit'], button.btn-submit") || submitBtn;
+      if (currentSubmit && isVisible(currentSubmit) && !currentSubmit.disabled) {
+        return {
+          ok: false,
+          success: false,
+          step: "next_timeout",
+          error: "NEXT QUESTION did not appear within 4500ms after SUBMIT (Submit button is still enabled; submission may have failed)."
+        };
+      }
 
       return {
-        ok: true,
-        success: true,
-        step: isCompleted ? "quiz_completed" : "submit_only",
-        action: isCompleted ? "quiz_completed" : "submit_clicked",
-        button_text: submitText,
-        waited_ms: waitedMs,
-        reason: isCompleted
-          ? "Quiz completed (all questions attempted or completion banner detected)."
-          : "Submit clicked, but no Next button appeared within 4500ms."
+        ok: false,
+        success: false,
+        step: "next_timeout",
+        error: "NEXT QUESTION did not appear within 4500ms after SUBMIT."
       };
     }
 
     // (C) If neither Next nor Submit found, check if quiz is already completed
-    const bodyText = doc.body ? (doc.body.innerText || doc.body.textContent || "") : "";
-    if (/(?:questions?\s*attempted\s*:\s*(\d+)\s*\/\s*\1|quiz\s*completed|practice\s*completed)/i.test(bodyText)) {
+    if (isQuizCompleted(doc)) {
       return {
         ok: true,
         success: true,
@@ -607,6 +660,7 @@
   const QuizZyExecutor = {
     cleanText,
     isVisible,
+    isRadioOrOptionVisible,
     dispatchClick,
     findOptionElements,
     executeMcqAction,
