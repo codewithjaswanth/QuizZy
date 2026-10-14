@@ -1,0 +1,7 @@
+id,subject,q_type,question,options_json,expected_answer
+SAMPLE_1,Biology,mcq,What is the primary powerhouse of the eukaryotic cell?,"[""Ribosome"", ""Mitochondrion"", ""Nucleus"", ""Endoplasmic reticulum""]",B
+SAMPLE_2,Computer Science,mcq,Which of the following time complexities represents constant time?,"[""O(n)"", ""O(log n)"", ""O(1)"", ""O(n^2)""]",C
+SAMPLE_3,Software Engineering,order,Arrange the standard stages of the Software Development Life Cycle (SDLC) in chronological order.,"[""Deployment"", ""Requirements Analysis"", ""System Design"", ""Coding & Implementation""]","B,C,D,A"
+SAMPLE_4,History,order,Arrange these historic milestones in chronological order from earliest to latest.,"[""Invention of the World Wide Web"", ""First human moon landing"", ""Invention of the transistor"", ""First flight of the Wright brothers""]","D,C,B,A"
+SAMPLE_5,Chemistry,text,What is the chemical symbol for gold?,[],Au|gold
+SAMPLE_6,Astronomy,text,What is the closest planet to the Sun in our Solar System?,[],Mercury

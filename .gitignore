@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Environment secrets
+backend/.env
+.env
+.env.local
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Databases
+*.db
+*.sqlite3
+
+# Evaluation output artifacts
+eval/results/*.json
+!eval/results/.gitkeep

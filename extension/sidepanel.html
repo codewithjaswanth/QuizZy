@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizZy Solver</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="panel-container">
+    <!-- Header -->
+    <header class="panel-header">
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+        </svg>
+        <span class="brand-title">QuizZy</span>
+        <span class="brand-badge">v1.0</span>
+      </div>
+      <div class="header-status">
+        <div id="backend-status-pill" class="status-pill status-offline" title="Backend connection status">
+          <span class="status-dot"></span>
+          <span id="backend-status-text">Checking...</span>
+        </div>
+        <button id="btn-refresh-health" class="icon-button" title="Refresh backend status" aria-label="Refresh backend status">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Controls Bar -->
+    <section class="controls-section">
+      <div class="form-row">
+        <label for="input-subject" class="input-label">Subject</label>
+        <input type="text" id="input-subject" class="text-input" placeholder="e.g. Biology, History" value="General" />
+      </div>
+
+      <div class="form-row">
+        <label for="select-qtype" class="input-label">Question Type</label>
+        <select id="select-qtype" class="select-input">
+          <option value="auto">Auto-Detect</option>
+          <option value="mcq">MCQ (Single Choice)</option>
+          <option value="order">Order (Sequence / Drag)</option>
+          <option value="text">Text (Fill-in Blank)</option>
+        </select>
+      </div>
+
+      <div class="action-row">
+        <button id="btn-extract-solve" class="btn btn-primary" title="Extract active tab question and solve">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <span>Extract & Solve</span>
+        </button>
+      </div>
+
+      <div class="sub-actions-row">
+        <button id="btn-extract-only" class="btn btn-secondary btn-sm" title="Extract quiz from active page without calling solver">
+          Extract Only
+        </button>
+        <button id="btn-solve-only" class="btn btn-secondary btn-sm" title="Solve whatever is currently in preview">
+          Solve Current
+        </button>
+      </div>
+    </section>
+
+    <!-- Notification Toast / Alert Box -->
+    <div id="panel-alert" class="panel-alert hidden" role="alert">
+      <span id="panel-alert-text"></span>
+      <button id="btn-close-alert" class="alert-close" aria-label="Dismiss alert">&times;</button>
+    </div>
+
+    <!-- Solution Result Card (Directly Below Extract & Solve) -->
+    <section class="card solution-card" id="card-solution">
+      <div class="card-header">
+        <div class="card-title-group">
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+          <span class="card-title">Solution</span>
+        </div>
+        <div id="solution-badges" class="badges-row">
+          <span id="badge-searxng" class="badge badge-searxng hidden" title="Factual search grounding applied via SearXNG">WEB VERIFIED</span>
+          <span id="badge-confidence" class="badge badge-neutral">IDLE</span>
+          <span id="badge-cache" class="badge badge-neutral hidden">CACHE</span>
+          <span id="badge-latency" class="badge badge-neutral hidden">0ms</span>
+        </div>
+      </div>
+
+      <div class="card-body">
+        <!-- Idle State -->
+        <div id="solution-idle-state" class="state-container">
+          <svg class="state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+          <p class="state-text">Ready. Open a quiz page in your active tab and click <strong>Extract & Solve</strong>.</p>
+        </div>
+
+        <!-- Loading State -->
+        <div id="solution-loading-state" class="state-container hidden">
+          <div class="spinner"></div>
+          <p id="loading-status-text" class="state-text">Solving with dual Groq models...</p>
+        </div>
+
+        <!-- Uncertain Warning Banner -->
+        <div id="banner-uncertain" class="banner banner-error hidden" role="alert">
+          <div class="banner-title">
+            <svg class="banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"></polygon>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <span>UNCERTAIN &mdash; Do Not Guess</span>
+          </div>
+          <p id="uncertain-reason-text" class="banner-desc">Primary models disagreed and tie-breaker was unavailable.</p>
+        </div>
+
+        <!-- Solved Answer Displays -->
+        <div id="solution-content" class="solution-content hidden">
+          <!-- MCQ Visual Highlight Container -->
+          <div id="solution-mcq-container" class="solution-type-container hidden">
+            <div class="solution-subheading">Visual Option Identification:</div>
+            <div id="solution-mcq-options" class="mcq-options-list"></div>
+          </div>
+
+          <!-- Order Visual Target Sequence Container -->
+          <div id="solution-order-container" class="solution-type-container hidden">
+            <div class="solution-subheading">Target Sequence & Swap Guide:</div>
+            <div id="solution-order-items" class="order-items-list"></div>
+          </div>
+
+          <!-- Text Input Display Container -->
+          <div id="solution-text-container" class="solution-type-container hidden">
+            <div class="solution-subheading">Canonical Free-Text Answer:</div>
+            <div class="text-answer-box">
+              <span id="solution-text-val" class="text-answer-value"></span>
+              <button id="btn-copy-answer" class="btn btn-secondary btn-sm" title="Copy answer to clipboard">
+                <svg class="btn-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+                <span id="copy-btn-label">Copy Answer</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- SearXNG Web Grounding Sources (Collapsible) -->
+          <div id="solution-searxng-sources" class="searxng-sources-container hidden">
+            <details class="sources-drawer">
+              <summary class="sources-summary">
+                <svg class="sources-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <span>Web Grounding Evidence (SearXNG)</span>
+                <span class="chevron">&#9662;</span>
+              </summary>
+              <div id="searxng-sources-list" class="sources-list"></div>
+            </details>
+          </div>
+
+          <!-- Reasoning Card -->
+          <div class="reasoning-box">
+            <div class="reasoning-label">Solver Rationale:</div>
+            <div id="solution-reason" class="reasoning-text"></div>
+          </div>
+
+          <!-- Feedback & Override Bar (Phase 5) -->
+          <div class="feedback-container" id="feedback-section">
+            <div class="feedback-actions-row">
+              <button id="btn-flag-wrong" class="btn btn-warning btn-sm" title="Flag as wrong, evict from cache, and open correction box">
+                <svg class="btn-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
+                  <line x1="4" y1="22" x2="4" y2="15"></line>
+                </svg>
+                <span>Flag Wrong</span>
+              </button>
+              <button id="btn-save-eval" class="btn btn-secondary btn-sm" title="Save current verified question + answer to questions.csv">
+                <svg class="btn-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+                <span>Save to Eval CSV</span>
+              </button>
+            </div>
+
+            <!-- Collapsible Teach Correct Answer Box -->
+            <div id="feedback-correction-box" class="feedback-correction-box hidden">
+              <div class="correction-header">
+                <span class="correction-title">Teach Correct Answer</span>
+                <button id="btn-close-correction" class="btn-link" title="Close correction box">&times;</button>
+              </div>
+              <p class="correction-hint" id="correction-input-hint">
+                Enter correct letter (e.g. "B"), permutation (e.g. "C,A,D,B"), or text:
+              </p>
+              <div class="form-row">
+                <input type="text" id="input-correct-answer" class="text-input text-input-sm" placeholder="Correct answer (e.g., B or text)..." />
+              </div>
+              <div class="form-row" style="margin-top: 6px;">
+                <input type="text" id="input-feedback-notes" class="text-input text-input-sm" placeholder="Optional notes / explanation..." />
+              </div>
+              <div class="correction-actions" style="margin-top: 8px;">
+                <button id="btn-apply-override" class="btn btn-primary btn-sm">
+                  Apply Override
+                </button>
+              </div>
+            </div>
+            
+            <div id="feedback-status-msg" class="feedback-status-msg hidden"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Extracted Preview Card (Collapsible) -->
+    <section class="card preview-card">
+      <div class="card-header" id="toggle-preview-card">
+        <div class="card-title-group">
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+          <span class="card-title">Extracted Question</span>
+        </div>
+        <span id="preview-count-badge" class="badge badge-neutral">0 options</span>
+      </div>
+      <div id="preview-body" class="card-body">
+        <textarea id="preview-question" class="preview-textarea" placeholder="Question text extracted from host page..." rows="3"></textarea>
+        <div id="preview-options-container" class="preview-options-list">
+          <div class="empty-state-text">No question extracted yet. Click "Extract & Solve" above.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Auto Mode Control Center (Phase 3 Guardrailed Automation) -->
+    <section class="card automode-card" id="card-automode">
+      <div class="card-header">
+        <div class="card-title-group">
+          <svg class="card-icon brand-icon-color" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          <span class="card-title">Auto Mode Control</span>
+        </div>
+        <div class="badges-row">
+          <span id="badge-host-allowed" class="badge badge-success hidden">HOST ALLOWED</span>
+          <span id="badge-host-blocked" class="badge badge-warning">HOST BLOCKED</span>
+        </div>
+      </div>
+
+      <div class="card-body">
+        <!-- Host Allowlist Barrier -->
+        <div class="allowlist-bar">
+          <div class="allowlist-info">
+            <span class="allowlist-label">Own-App Origin:</span>
+            <code id="automode-host-display" class="allowlist-host">checking...</code>
+          </div>
+          <button id="btn-toggle-host-allow" class="btn btn-secondary btn-sm" title="Toggle current host in own-app allowlist">
+            Allow Current Host
+          </button>
+        </div>
+
+        <!-- Configuration Parameters -->
+        <div class="automode-config-grid">
+          <div class="form-row">
+            <label for="input-max-steps" class="input-label" title="Hard limit on questions to auto-solve (1-100)">
+              Max Steps
+            </label>
+            <input type="number" id="input-max-steps" class="text-input text-input-sm" min="1" max="100" value="10" />
+          </div>
+
+          <div class="form-row">
+            <label for="input-step-delay" class="input-label" title="Cooldown delay before advancing to next question (300-5000ms)">
+              Step Delay (ms)
+            </label>
+            <input type="number" id="input-step-delay" class="text-input text-input-sm" min="300" max="5000" step="100" value="800" />
+          </div>
+        </div>
+
+        <div class="form-row" style="margin-top: 8px;">
+          <label for="select-order-mode" class="input-label">Order Question Handling</label>
+          <select id="select-order-mode" class="select-input select-input-sm">
+            <option value="auto_drag">Auto-Drag & Verify (Safe-Pause if unmoved)</option>
+            <option value="always_pause">Always Pause for Manual Swap</option>
+          </select>
+        </div>
+
+        <div class="guardrail-checkboxes" style="margin-top: 8px;">
+          <label class="toggle-label" for="chk-require-high">
+            <input type="checkbox" id="chk-require-high" checked />
+            <span class="toggle-text">
+              <strong>Require HIGH_BOTH_AGREE Only</strong>
+              <small class="toggle-desc">Immediately halts Auto Mode if models disagree or tie-breaker is needed.</small>
+            </span>
+          </label>
+        </div>
+
+        <!-- Action Controls -->
+        <div class="automode-action-row" style="margin-top: 10px;">
+          <button id="btn-apply-once" class="btn btn-secondary" title="Execute DOM click or fill for current question only without looping">
+            Apply Answer Once
+          </button>
+          <button id="btn-start-auto" class="btn btn-primary" title="Start guarded autonomous loop">
+            Start Auto Mode
+          </button>
+        </div>
+
+        <!-- Emergency Kill Switch (Panic Button) -->
+        <button id="btn-kill-switch" class="btn btn-panic hidden" title="Emergency halt Auto Mode immediately (or press Escape key)">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="15" y1="9" x2="9" y2="15"></line>
+            <line x1="9" y1="9" x2="15" y2="15"></line>
+          </svg>
+          <span>STOP AUTO MODE (Panic / Esc)</span>
+        </button>
+
+        <!-- Resume Step Button (Shown when paused for manual order swap) -->
+        <button id="btn-resume-auto" class="btn btn-resume hidden" title="Resume Auto Mode after completing manual order swap">
+          <span>Resume Auto Mode &rarr;</span>
+        </button>
+
+        <!-- Real-Time Telemetry Strip -->
+        <div class="telemetry-strip" id="automode-telemetry">
+          <div class="telemetry-header">
+            <span id="telemetry-state-badge" class="badge badge-idle">IDLE</span>
+            <span id="telemetry-step-counter" class="telemetry-counter">Step 0 / 10</span>
+          </div>
+          <div id="telemetry-log" class="telemetry-log-text">Auto Mode standing by. Ready for user activation.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DOM Selectors & Settings Drawer (Collapsible) -->
+    <details class="settings-drawer" id="drawer-settings">
+      <summary class="drawer-summary">
+        <div class="summary-title">
+          <svg class="summary-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>DOM Selectors & Settings</span>
+        </div>
+        <span class="chevron">&#9662;</span>
+      </summary>
+
+      <div class="drawer-content">
+        <div class="settings-host-bar">
+          <span class="host-label">Active Host:</span>
+          <span id="active-host-badge" class="host-badge">unknown</span>
+        </div>
+
+        <div class="form-row">
+          <label for="setting-question-selector" class="input-label">Question Selector</label>
+          <input type="text" id="setting-question-selector" class="text-input text-input-sm" placeholder="e.g. .question-text, h2.quiz-q" />
+        </div>
+
+        <div class="form-row">
+          <label for="setting-options-selector" class="input-label">Options Selector</label>
+          <input type="text" id="setting-options-selector" class="text-input text-input-sm" placeholder="e.g. .quiz-option, [draggable=true]" />
+        </div>
+
+        <div class="form-row">
+          <label for="setting-textinput-selector" class="input-label">Text Input Selector</label>
+          <input type="text" id="setting-textinput-selector" class="text-input text-input-sm" placeholder="e.g. input.quiz-input, textarea" />
+        </div>
+
+        <div class="form-row">
+          <label for="setting-subject-selector" class="input-label">Subject Selector</label>
+          <input type="text" id="setting-subject-selector" class="text-input text-input-sm" placeholder="e.g. [data-quiz-subject], header h2" />
+        </div>
+
+        <div class="form-row">
+          <label for="setting-next-selector" class="input-label">Next Button Selector</label>
+          <input type="text" id="setting-next-selector" class="text-input text-input-sm" placeholder="e.g. .btn-next, #next-question, [data-quiz-next]" />
+        </div>
+
+        <div class="settings-actions-row">
+          <button id="btn-save-selectors" class="btn btn-secondary btn-sm">Save for this Host</button>
+          <button id="btn-reset-selectors" class="btn btn-secondary btn-sm">Reset</button>
+        </div>
+
+        <hr class="settings-divider" />
+
+        <div class="toggle-row">
+          <label class="toggle-label" for="toggle-dom-highlight">
+            <input type="checkbox" id="toggle-dom-highlight" />
+            <span class="toggle-text">
+              <strong>Opt-In Page DOM Highlight</strong>
+              <small class="toggle-desc">Default OFF (Zero host-page DOM writes). When enabled, outlines winning block on active page.</small>
+            </span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <label class="toggle-label" for="toggle-bypass-cache">
+            <input type="checkbox" id="toggle-bypass-cache" />
+            <span class="toggle-text">
+              <strong>Bypass SQLite Cache</strong>
+              <small class="toggle-desc">Force live dual-model inference on every request.</small>
+            </span>
+          </label>
+        </div>
+      </div>
+    </details>
+
+    <footer class="panel-footer">
+      <span>Zero-DOM-Mutation by default &bull; QuizZy</span>
+    </footer>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

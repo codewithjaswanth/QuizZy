@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizZy Mock Quiz Test Harness</title>
+  <style>
+    :root {
+      --bg: #0F172A;
+      --surface: #1E293B;
+      --surface-elevated: #334155;
+      --border: #475569;
+      --text: #F8FAFC;
+      --text-muted: #94A3B8;
+      --primary: #6366F1;
+      --primary-hover: #4F46E5;
+      --success: #22C55E;
+      --danger: #EF4444;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.6;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* MutationObserver Tripwire Banner */
+    .tripwire-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 14px;
+      transition: all 0.3s ease;
+    }
+    .tripwire-clean {
+      background: rgba(34, 197, 94, 0.15);
+      border: 2px solid var(--success);
+      color: #86EFAC;
+    }
+    .tripwire-violation {
+      background: rgba(239, 68, 68, 0.25);
+      border: 2px solid var(--danger);
+      color: #FCA5A5;
+      box-shadow: 0 0 16px rgba(239, 68, 68, 0.4);
+    }
+    .tripwire-badge {
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .tripwire-clean .tripwire-badge {
+      background: var(--success);
+      color: #0F172A;
+    }
+    .tripwire-violation .tripwire-badge {
+      background: var(--danger);
+      color: #FFFFFF;
+    }
+
+    /* Scenario Selector Bar */
+    .scenario-nav {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .scenario-btn {
+      background: var(--surface);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .scenario-btn:hover {
+      background: var(--surface-elevated);
+      color: var(--text);
+    }
+    .scenario-btn.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #FFFFFF;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+    }
+
+    /* Quiz Card Simulation */
+    .quiz-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .quiz-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+    .quiz-subject {
+      color: #818CF8;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .quiz-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .quiz-question {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    /* Option Blocks */
+    .options-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .quiz-option {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 14px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: border-color 0.15s, background-color 0.15s;
+    }
+    .quiz-option:hover {
+      background: var(--surface-elevated);
+      border-color: #64748B;
+    }
+    .quiz-option.selected {
+      border-color: var(--primary);
+      background: rgba(99, 102, 241, 0.15);
+    }
+    .quiz-option.draggable-item {
+      cursor: grab;
+      user-select: none;
+    }
+    .quiz-option.draggable-item:active {
+      cursor: grabbing;
+    }
+    .drag-handle {
+      color: var(--text-muted);
+      font-size: 16px;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    /* Text Input Scenario */
+    .quiz-input-box {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-family: inherit;
+    }
+    .quiz-input-box:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+
+    /* Quiz Navigation Footer */
+    .quiz-footer {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      border-top: 1px solid var(--border);
+      padding-top: 16px;
+      margin-top: 6px;
+    }
+    .btn-next {
+      background: var(--primary);
+      color: #FFFFFF;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.15s;
+    }
+    .btn-next:hover {
+      background: var(--primary-hover);
+    }
+
+    .hidden { display: none !important; }
+
+    /* Footer verification helper */
+    .audit-footer {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Live MutationObserver Tripwire Banner -->
+    <div id="tripwire-banner" class="tripwire-banner tripwire-clean">
+      <div>
+        <span id="tripwire-status-text">DOM Integrity: CLEAN (0 unauthorized mutations)</span>
+        <div id="tripwire-log" style="font-size: 11px; margin-top: 4px; font-weight: normal; opacity: 0.85;">
+          Tripwire active. Monitoring all body node modifications, attribute shifts, and foreign element injections.
+        </div>
+      </div>
+      <span id="tripwire-badge" class="tripwire-badge">ZERO MUTATION</span>
+    </div>
+
+    <!-- Scenario Switcher Tabs -->
+    <nav class="scenario-nav" aria-label="Mock Quiz Scenarios">
+      <button class="scenario-btn active" data-scenario="mcq4">Scenario 1: MCQ (4 Options)</button>
+      <button class="scenario-btn" data-scenario="mcq2">Scenario 2: True/False (2 Options)</button>
+      <button class="scenario-btn" data-scenario="order4">Scenario 3: Order (4 Draggable Blocks)</button>
+      <button class="scenario-btn" data-scenario="text">Scenario 4: Free-Text Input</button>
+      <button class="scenario-btn" data-scenario="react-math">Scenario 5: React Math (learning.ccbp.in)</button>
+    </nav>
+
+    <!-- Scenario 1: MCQ (4 Options) -->
+    <section id="scenario-mcq4" class="quiz-card scenario-view">
+      <div class="quiz-header">
+        <span class="quiz-subject" data-quiz-subject>Cellular Biology</span>
+        <span class="quiz-meta">Question 1 of 4 &bull; Single Choice</span>
+      </div>
+      <h2 class="quiz-question" data-quiz-question>What organelle produces ATP through cellular respiration?</h2>
+      <div class="options-grid">
+        <div class="quiz-option" data-quiz-option>Ribosome</div>
+        <div class="quiz-option" data-quiz-option>Mitochondrion</div>
+        <div class="quiz-option" data-quiz-option>Endoplasmic reticulum</div>
+        <div class="quiz-option" data-quiz-option>Golgi apparatus</div>
+      </div>
+      <div class="quiz-footer">
+        <button id="next-question" class="btn-next" data-quiz-next title="Advance to next question">Next Question &rarr;</button>
+      </div>
+    </section>
+
+    <!-- Scenario 2: True/False (2 Options) -->
+    <section id="scenario-mcq2" class="quiz-card scenario-view hidden">
+      <div class="quiz-header">
+        <span class="quiz-subject" data-quiz-subject>Genetics</span>
+        <span class="quiz-meta">Question 2 of 4 &bull; True / False</span>
+      </div>
+      <h2 class="quiz-question" data-quiz-question>DNA replication is semiconservative.</h2>
+      <div class="options-grid">
+        <div class="quiz-option" data-quiz-option>True</div>
+        <div class="quiz-option" data-quiz-option>False</div>
+      </div>
+      <div class="quiz-footer">
+        <button class="btn-next" data-quiz-next title="Advance to next question">Next Question &rarr;</button>
+      </div>
+    </section>
+
+    <!-- Scenario 3: Order (4 Draggable Blocks) -->
+    <section id="scenario-order4" class="quiz-card scenario-view hidden">
+      <div class="quiz-header">
+        <span class="quiz-subject" data-quiz-subject>Cytology</span>
+        <span class="quiz-meta">Question 3 of 4 &bull; Drag and Drop Sequence</span>
+      </div>
+      <h2 class="quiz-question" data-quiz-question>Arrange the four stages of mitosis in correct sequential order from first to last:</h2>
+      <div class="options-grid" id="sortable-options">
+        <div class="quiz-option draggable-item" draggable="true" data-quiz-option>
+          <span class="drag-handle">&#9776;</span> Anaphase
+        </div>
+        <div class="quiz-option draggable-item" draggable="true" data-quiz-option>
+          <span class="drag-handle">&#9776;</span> Prophase
+        </div>
+        <div class="quiz-option draggable-item" draggable="true" data-quiz-option>
+          <span class="drag-handle">&#9776;</span> Telophase
+        </div>
+        <div class="quiz-option draggable-item" draggable="true" data-quiz-option>
+          <span class="drag-handle">&#9776;</span> Metaphase
+        </div>
+      </div>
+      <div class="quiz-footer">
+        <button class="btn-next" data-quiz-next title="Advance to next question">Next Question &rarr;</button>
+      </div>
+    </section>
+
+    <!-- Scenario 4: Free-Text Input -->
+    <section id="scenario-text" class="quiz-card scenario-view hidden">
+      <div class="quiz-header">
+        <span class="quiz-subject" data-quiz-subject>Inorganic Chemistry</span>
+        <span class="quiz-meta">Question 4 of 4 &bull; Fill in the Blank</span>
+      </div>
+      <h2 class="quiz-question" data-quiz-question>What is the chemical symbol for the element Gold?</h2>
+      <div class="options-grid">
+        <input type="text" class="quiz-input-box" data-quiz-input placeholder="Type the chemical symbol here (e.g. Au)..." />
+      </div>
+      <div class="quiz-footer">
+        <button class="btn-next" data-quiz-next title="Submit final quiz answer">Submit Quiz &check;</button>
+      </div>
+    </section>
+
+    <!-- Scenario 5: Live React Quiz (learning.ccbp.in Math & Two-Step Submit) -->
+    <section id="scenario-react-math" class="quiz-card scenario-view hidden">
+      <div class="react-top-bar" style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 14px; font-size: 13px; color: var(--text-muted);">
+        <span class="quiz-subject">MCQ PRACTICE | PROBABILITY RULES AND THEOREM</span>
+        <span>SCORE: 0</span>
+        <span>QUESTIONS ATTEMPTED: 0/15</span>
+        <button style="background: none; border: none; color: var(--text-muted); cursor: pointer;">PRACTICE INSTRUCTIONS</button>
+        <button style="background: none; border: none; color: var(--danger); cursor: pointer;">END PRACTICE</button>
+      </div>
+
+      <div class="white-card-container" style="padding: 12px 0;">
+        <p style="font-size: 16px; font-weight: 500; margin-bottom: 16px;">
+          Two dice are rolled. What is the probability of getting a 1 on one die and a 6 on the other?
+        </p>
+
+        <div class="radio-options-list" style="display: flex; flex-direction: column; gap: 10px;">
+          <label class="radio-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 10px; border-radius: 8px; background: var(--surface);">
+            <input type="radio" name="dice_prob" value="1/36" />
+            <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mfrac><mn>1</mn><mn>36</mn></mfrac></mrow><annotation encoding="application/x-tex">\frac{1}{36}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="mord">1/36</span></span></span>
+          </label>
+          <label class="radio-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 10px; border-radius: 8px; background: var(--surface);">
+            <input type="radio" name="dice_prob" value="1/6" />
+            <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mfrac><mn>1</mn><mn>6</mn></mfrac></mrow><annotation encoding="application/x-tex">\frac{1}{6}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="mord">1/6</span></span></span>
+          </label>
+          <label class="radio-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 10px; border-radius: 8px; background: var(--surface);">
+            <input type="radio" name="dice_prob" value="1/12" />
+            <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mfrac><mn>1</mn><mn>12</mn></mfrac></mrow><annotation encoding="application/x-tex">\frac{1}{12}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="mord">1/12</span></span></span>
+          </label>
+          <label class="radio-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 10px; border-radius: 8px; background: var(--surface);">
+            <input type="radio" name="dice_prob" value="2/36" />
+            <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mfrac><mn>2</mn><mn>36</mn></mfrac></mrow><annotation encoding="application/x-tex">\frac{2}{36}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="mord">2/36</span></span></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="quiz-footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px;">
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-subtle" style="background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 8px 14px; border-radius: 6px; cursor: pointer;">SHOW ANSWER</button>
+          <button class="btn-subtle" style="background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 8px 14px; border-radius: 6px; cursor: pointer;">SKIP</button>
+        </div>
+        <div id="react-action-buttons">
+          <button id="btn-react-submit" class="btn-next" style="background: var(--primary);">SUBMIT</button>
+          <button id="btn-react-next" class="btn-next hidden" data-quiz-next style="background: var(--success);">NEXT QUESTION &rarr;</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Completed Screen -->
+    <section id="scenario-completed" class="quiz-card scenario-view hidden">
+      <div class="quiz-header">
+        <span class="quiz-subject">Quiz Completed</span>
+        <span class="quiz-meta">Done &bull; 4 of 4 Answered</span>
+      </div>
+      <h2 class="quiz-question" style="color: var(--success);">All Quiz Questions Answered Successfully!</h2>
+      <p style="color: var(--text-muted); font-size: 14px;">
+        Auto Mode successfully completed all questions on this page with verified accuracy.
+      </p>
+      <div class="quiz-footer" style="justify-content: flex-start;">
+        <button id="btn-restart-quiz" class="btn-next" style="background: var(--surface-elevated);">Restart Mock Quiz</button>
+      </div>
+    </section>
+
+    <footer class="audit-footer">
+      QuizZy Test Harness &bull; Verified Zero-DOM-Mutation by default
+    </footer>
+  </div>
+
+  <script>
+    // MutationObserver Tripwire Monitor
+    (function () {
+      let unauthorizedMutationCount = 0;
+      const tripwireBanner = document.getElementById("tripwire-banner");
+      const tripwireStatus = document.getElementById("tripwire-status-text");
+      const tripwireBadge = document.getElementById("tripwire-badge");
+      const tripwireLog = document.getElementById("tripwire-log");
+
+      const targetContainer = document.querySelector(".container");
+
+      const observer = new MutationObserver((mutations) => {
+        // Filter out safe internal UI updates (tripwire banner itself or scenario class switches)
+        const violations = mutations.filter((m) => {
+          if (tripwireBanner.contains(m.target)) return false;
+
+          // Check if any foreign elements (scripts, styles, tracking tags) were added
+          if (m.type === "childList") {
+            for (let i = 0; i < m.addedNodes.length; i++) {
+              const node = m.addedNodes[i];
+              if (node.nodeType === 1) { // ELEMENT_NODE
+                const tag = node.tagName.toLowerCase();
+                if (tag === "script" || tag === "iframe" || tag === "link" || tag === "style" || tag === "object") {
+                  return true; // Unauthorized foreign injection!
+                }
+              }
+            }
+          }
+
+          // Check if inline styles were maliciously injected on the quiz container
+          if (m.type === "attributes" && m.attributeName === "style" && m.target === targetContainer) {
+            return true;
+          }
+
+          return false;
+        });
+
+        if (violations.length > 0) {
+          unauthorizedMutationCount += violations.length;
+          tripwireBanner.className = "tripwire-banner tripwire-violation";
+          tripwireStatus.textContent = `DOM Integrity: COMPROMISED (${unauthorizedMutationCount} unauthorized mutations)`;
+          tripwireBadge.textContent = "MUTATION DETECTED";
+          tripwireLog.textContent = `Violation: ${violations[0].type} on <${violations[0].target.nodeName.toLowerCase()}> at ${new Date().toLocaleTimeString()}`;
+        }
+      });
+
+      observer.observe(targetContainer, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+
+      window.QuizZyMutationTripwire = {
+        getMutationCount: () => unauthorizedMutationCount,
+        reset: () => {
+          unauthorizedMutationCount = 0;
+          tripwireBanner.className = "tripwire-banner tripwire-clean";
+          tripwireStatus.textContent = "DOM Integrity: CLEAN (0 unauthorized mutations)";
+          tripwireBadge.textContent = "ZERO MUTATION";
+          tripwireLog.textContent = "Tripwire active. Monitoring all body node modifications.";
+        }
+      };
+    })();
+
+    // Option Selection Click Handler
+    document.querySelectorAll(".quiz-option").forEach((opt) => {
+      opt.addEventListener("click", () => {
+        const parent = opt.parentElement;
+        if (parent) {
+          parent.querySelectorAll(".quiz-option").forEach(o => o.classList.remove("selected"));
+        }
+        opt.classList.add("selected");
+      });
+    });
+
+    // HTML5 Drag and Drop Handlers for Scenario 3 Order Blocks
+    (function setupDragAndDrop() {
+      const container = document.getElementById("sortable-options");
+      if (!container) return;
+
+      let draggedItem = null;
+
+      container.querySelectorAll(".draggable-item").forEach((item) => {
+        item.addEventListener("dragstart", (e) => {
+          draggedItem = item;
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", item.textContent.trim());
+          }
+        });
+
+        item.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        });
+
+        item.addEventListener("drop", (e) => {
+          e.preventDefault();
+          if (draggedItem && draggedItem !== item) {
+            // Swap draggedItem and target item in DOM
+            const allItems = Array.from(container.children);
+            const draggedIdx = allItems.indexOf(draggedItem);
+            const targetIdx = allItems.indexOf(item);
+
+            if (draggedIdx < targetIdx) {
+              container.insertBefore(draggedItem, item.nextSibling);
+            } else {
+              container.insertBefore(draggedItem, item);
+            }
+          }
+        });
+
+        item.addEventListener("dragend", () => {
+          draggedItem = null;
+        });
+      });
+    })();
+
+    // Sequential Navigation Order
+    const scenarioOrder = ["mcq4", "mcq2", "order4", "text", "react-math", "completed"];
+    let currentScenarioIndex = 0;
+
+    // React Submit -> Next Toggle Handler
+    const btnReactSubmit = document.getElementById("btn-react-submit");
+    const btnReactNext = document.getElementById("btn-react-next");
+    if (btnReactSubmit && btnReactNext) {
+      btnReactSubmit.addEventListener("click", () => {
+        btnReactSubmit.classList.add("hidden");
+        btnReactNext.classList.remove("hidden");
+      });
+    }
+
+    function showScenario(scenarioId) {
+      document.querySelectorAll(".scenario-btn").forEach((b) => {
+        b.classList.toggle("active", b.getAttribute("data-scenario") === scenarioId);
+      });
+      document.querySelectorAll(".scenario-view").forEach((v) => {
+        v.classList.add("hidden");
+      });
+      const target = document.getElementById(`scenario-${scenarioId}`);
+      if (target) target.classList.remove("hidden");
+    }
+
+    // Next Question Button Handlers
+    document.querySelectorAll("[data-quiz-next]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        currentScenarioIndex++;
+        if (currentScenarioIndex < scenarioOrder.length) {
+          showScenario(scenarioOrder[currentScenarioIndex]);
+        }
+      });
+    });
+
+    // Restart Quiz Button
+    const btnRestart = document.getElementById("btn-restart-quiz");
+    if (btnRestart) {
+      btnRestart.addEventListener("click", () => {
+        currentScenarioIndex = 0;
+        showScenario(scenarioOrder[0]);
+      });
+    }
+
+    // Manual Scenario Tab Clicks
+    document.querySelectorAll(".scenario-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const targetScenario = btn.getAttribute("data-scenario");
+        currentScenarioIndex = scenarioOrder.indexOf(targetScenario);
+        if (currentScenarioIndex === -1) currentScenarioIndex = 0;
+        showScenario(targetScenario);
+      });
+    });
+  </script>
+</body>
+</html>

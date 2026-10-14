@@ -1,0 +1,24 @@
+{
+  "primary_a": {
+    "provider": "groq",
+    "family": "gpt-oss",
+    "model": "openai/gpt-oss-120b"
+  },
+  "primary_b": {
+    "provider": "groq",
+    "family": "qwen",
+    "model": "qwen/qwen3.8-27b"
+  },
+  "fallback": {
+    "provider": "openrouter",
+    "family": "nemotron",
+    "model": "nvidia/nemotron-3-super-120b-a12b:free"
+  },
+  "timeouts_ms": {
+    "groq_parallel_timeout_ms": 1800,
+    "openrouter_fallback_timeout_ms": 2200,
+    "searxng_timeout_ms": 700,
+    "searxng_grounded_llm_timeout_ms": 950,
+    "hard_total_budget_ms": 3000
+  }
+}
