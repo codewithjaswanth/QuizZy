@@ -1364,6 +1364,186 @@ async function main() {
     throw new Error(`Test 14 option 1 circle was not selected after execution!`);
   }
 
+  // Test 15: Compact Rectangular Floating Bar, Movable White Dot Mode & Modifier Double-Tap Hotkeys
+  const test15HudCode = fs.readFileSync(path.resolve(process.cwd(), "extension/floating_hud.js"), "utf8");
+
+  const hudDoc = el("html", "", {}, [el("head"), el("body")]);
+  hudDoc.body = hudDoc.childNodes[1];
+  hudDoc.documentElement = hudDoc;
+  hudDoc.getElementById = (id) => hudDoc.querySelector('#' + id);
+  hudDoc.createElement = (tag) => new MockNode(tag);
+
+  const windowListeners = {};
+  const hudSandbox = {
+    window: null,
+    document: hudDoc,
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    Event: global.Event,
+    MouseEvent: global.MouseEvent,
+    PointerEvent: global.PointerEvent,
+    HTMLInputElement: global.HTMLInputElement,
+    HTMLTextAreaElement: global.HTMLTextAreaElement,
+    Date,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Set,
+    RegExp,
+    console,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id),
+    innerWidth: 1920,
+    innerHeight: 1080,
+    chrome: {
+      storage: {
+        local: {
+          get: (keys, cb) => { if (cb) cb({}); },
+          set: (obj, cb) => { if (cb) cb(); }
+        }
+      },
+      runtime: {
+        sendMessage: (msg, cb) => {
+          if (cb) cb({ success: true, data: { status: "ok", cache_entries: 5 } });
+        },
+        onMessage: {
+          addListener: () => {}
+        }
+      }
+    },
+    addEventListener: (type, fn) => {
+      if (!windowListeners[type]) windowListeners[type] = [];
+      windowListeners[type].push(fn);
+    },
+    removeEventListener: (type, fn) => {
+      if (!windowListeners[type]) return;
+      const idx = windowListeners[type].indexOf(fn);
+      if (idx !== -1) windowListeners[type].splice(idx, 1);
+    },
+    dispatchEvent: (evt) => {
+      if (windowListeners[evt.type]) {
+        for (const fn of windowListeners[evt.type]) {
+          fn(evt);
+        }
+      }
+      return true;
+    }
+  };
+  hudSandbox.window = hudSandbox;
+
+  const test15HudInstance = vm.runInNewContext(test15HudCode, hudSandbox);
+  if (!test15HudInstance) {
+    throw new Error("Test 15: floating_hud.js did not return an instance");
+  }
+
+  // 1. Verify Rectangular Bar DOM structure (#hud-full-bar)
+  const fullBarEl = test15HudInstance.shadow.querySelector("#hud-full-bar") || test15HudInstance.shadow.querySelector("#hud-bar");
+  if (!fullBarEl) {
+    throw new Error("Test 15: Compact Rectangular Floating Bar (#hud-full-bar) missing in shadow DOM!");
+  }
+  const answerZone = fullBarEl.querySelector("#hud-answer-zone");
+  const solveBtn = fullBarEl.querySelector("#hud-btn-solve");
+  const applyBtn = fullBarEl.querySelector("#hud-btn-apply");
+  const autoBtn = fullBarEl.querySelector("#hud-btn-auto");
+  if (!answerZone || !solveBtn || !applyBtn || !autoBtn) {
+    throw new Error("Test 15: Compact Rectangular Floating Bar missing internal controls (answerZone, solve, apply, auto)!");
+  }
+
+  // 2. Verify Movable White Dot (#hud-mini-dot)
+  const miniDotEl = test15HudInstance.shadow.querySelector("#hud-mini-dot");
+  if (!miniDotEl) {
+    throw new Error("Test 15: Movable White Dot (#hud-mini-dot) missing in shadow DOM!");
+  }
+
+  // Initially full bar is visible and mini dot is hidden
+  if (fullBarEl.classList.contains("hidden")) {
+    throw new Error("Test 15: fullBarEl should initially NOT have 'hidden' class");
+  }
+  if (!miniDotEl.classList.contains("hidden")) {
+    throw new Error("Test 15: miniDotEl should initially have 'hidden' class");
+  }
+
+  // 3. Minimize to White Dot via setMinimized(true)
+  test15HudInstance.setMinimized(true);
+  if (!fullBarEl.classList.contains("hidden")) {
+    throw new Error("Test 15: fullBarEl should have 'hidden' after setMinimized(true)");
+  }
+  if (miniDotEl.classList.contains("hidden")) {
+    throw new Error("Test 15: miniDotEl should NOT have 'hidden' after setMinimized(true)");
+  }
+
+  // 4. Double-click #hud-mini-dot to restore rectangular bar
+  miniDotEl.dispatchEvent({ type: "dblclick", bubbles: false, target: miniDotEl, stopPropagation: () => {} });
+  if (fullBarEl.classList.contains("hidden")) {
+    throw new Error("Test 15: fullBarEl was not restored after double-clicking #hud-mini-dot!");
+  }
+  if (!miniDotEl.classList.contains("hidden")) {
+    throw new Error("Test 15: miniDotEl was not hidden after double-clicking #hud-mini-dot!");
+  }
+
+  // 5. Test double-tap Alt to toggle between Bar and Dot
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Alt", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Alt" });
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Alt", repeat: false, preventDefault: () => {} });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Alt", preventDefault: () => {} });
+
+  if (test15HudInstance.isMinimized() !== true) {
+    throw new Error("Test 15: Double-tap Alt did not minimize to white dot!");
+  }
+
+  // Double-tap Alt again to restore
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Alt", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Alt" });
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Alt", repeat: false, preventDefault: () => {} });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Alt", preventDefault: () => {} });
+
+  if (test15HudInstance.isMinimized() !== false) {
+    throw new Error("Test 15: Second double-tap Alt did not restore the rectangular bar!");
+  }
+
+  // 6. Test double-tap Ctrl to hide / unhide QuizZy
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Control", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Control" });
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Control", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Control" });
+
+  if (!test15HudInstance.isHidden()) {
+    throw new Error("Test 15: Double-tap Ctrl did not hide QuizZy!");
+  }
+
+  // Second double-tap Ctrl -> should unhide QuizZy
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Control", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Control" });
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Control", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Control" });
+
+  if (test15HudInstance.isHidden()) {
+    throw new Error("Test 15: Second double-tap Ctrl did not unhide QuizZy!");
+  }
+
+  // 7. Test double-tap Shift (Fn fallback) to start / stop Auto Mode
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Shift", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Shift" });
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Shift", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Shift" });
+
+  if (!autoBtn.classList.contains("running")) {
+    throw new Error("Test 15: Double-tap Shift did not start Auto Mode!");
+  }
+
+  // Double-tap Shift again to stop Auto Mode
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Shift", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Shift" });
+  hudSandbox.dispatchEvent({ type: "keydown", key: "Shift", repeat: false });
+  hudSandbox.dispatchEvent({ type: "keyup", key: "Shift" });
+
+  if (autoBtn.classList.contains("running")) {
+    throw new Error("Test 15: Second double-tap Shift did not stop Auto Mode!");
+  }
+
   console.log("NODE_RUNTIME_TESTS_OK");
   process.exit(0);
 }

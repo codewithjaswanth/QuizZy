@@ -1352,6 +1352,7 @@ async def solve_question(
         # STAGE 2-GROQ: Fast Groq Arbiter on Disagreement / Single-Primary
         # Uses fast Groq completion with reason-first step-by-step verification
         succ_arb = False
+        arbiter_sol_obj = None
         arbiter_model = config.get("arbiter", {}).get("model") or "llama-3.3-70b-versatile"
         if groq_key and remaining_ms >= 400.0:
             cand_a_str = f"Option {norm_a.canonical_key}: {norm_a.selected_text}" if (norm_a and norm_a.canonical_key) else None
@@ -1373,6 +1374,7 @@ async def solve_question(
             agreement_details["groq_arbiter"] = arb_details
             if arb_sol is not None:
                 succ_arb = True
+                arbiter_sol_obj = arb_sol
                 norm_arb_key = arb_details.get("canonical_key")
                 if succ_a and norm_a and (norm_arb_key == norm_a.canonical_key):
                     total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -1397,6 +1399,21 @@ async def solve_question(
 
         if remaining_ms <= 200.0:
             penalty = hard_budget_ms if (err_a or err_b) else ((time.perf_counter() - t0) * 1000.0)
+            if arbiter_sol_obj is not None:
+                return SolverResponse(
+                    status="OK",
+                    confidence_tier="LOW_FALLBACK",
+                    canonical_key=arbiter_sol_obj.canonical_key,
+                    selected_index=arbiter_sol_obj.selected_index,
+                    selected_text=arbiter_sol_obj.selected_text,
+                    permutation_indices=arbiter_sol_obj.permutation_indices,
+                    ordered_texts=arbiter_sol_obj.ordered_texts,
+                    reason=arbiter_sol_obj.reason or "Groq arbiter candidate before budget limit.",
+                    latency_ms=penalty,
+                    models_called=models_called,
+                    agreement_details=agreement_details,
+                    error="Budget exhausted before fallback pool; returned arbiter candidate",
+                )
             best_n = norm_a if (succ_a and norm_a) else (norm_b if (succ_b and norm_b) else None)
             best_r = (parsed_a.reason if parsed_a else "") if succ_a else ((parsed_b.reason if parsed_b else "") if succ_b else "")
             if best_n is not None:
@@ -1471,6 +1488,7 @@ async def solve_question(
             agreement_details["groq_arbiter"] = arb_details
             if arb_sol is not None:
                 succ_arb = True
+                arbiter_sol_obj = arb_sol
                 total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 arb_sol.latency_ms = total_elapsed_ms
                 arb_sol.models_called = models_called
@@ -1481,12 +1499,25 @@ async def solve_question(
         penalty = hard_budget_ms if had_timeout_or_error else total_elapsed_ms
 
         # Never return an empty answer if ANY model succeeded!
+        if arbiter_sol_obj is not None:
+            return SolverResponse(
+                status="OK",
+                confidence_tier="LOW_FALLBACK",
+                canonical_key=arbiter_sol_obj.canonical_key,
+                selected_index=arbiter_sol_obj.selected_index,
+                selected_text=arbiter_sol_obj.selected_text,
+                permutation_indices=arbiter_sol_obj.permutation_indices,
+                ordered_texts=arbiter_sol_obj.ordered_texts,
+                reason=arbiter_sol_obj.reason or "Groq arbiter candidate derivation.",
+                latency_ms=penalty,
+                models_called=models_called,
+                agreement_details=agreement_details,
+                error="Tie-breaker unresolved; returned arbiter candidate",
+            )
+
         best_norm = None
         best_reason = ""
-        if succ_arb and norm_arb:
-            best_norm = norm_arb
-            best_reason = parsed_arb.reason if parsed_arb else ""
-        elif succ_a and norm_a:
+        if succ_a and norm_a:
             best_norm = norm_a
             best_reason = parsed_a.reason if parsed_a else ""
         elif succ_b and norm_b:

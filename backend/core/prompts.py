@@ -26,7 +26,7 @@ The JSON object must put "reason" FIRST and "answer" SECOND:
 
 CRITICAL CALCULATION ORDER INSTRUCTION:
 Always compute the exact mathematical formula, count, or code trace inside 'reason' FIRST before writing the final synthetic option letter ('A' through 'F') in 'answer'.
-For character/letter counting, anagrams, or permutations: count each character by listing every repeated letter and its exact tally (e.g. word "ARRANGE": total 7 letters, A: 2, R: 2, N: 1, G: 1, E: 1) inside 'reason' before computing factorials.
+For word arrangement / permutation problems, ALWAYS count the total letters N and the frequency of EVERY repeating letter (e.g., ARRANGE has 7 letters with A=2, R=2 -> 7!/(2!*2!) = 5040/4 = 1260). Compute the exact number in 'reason' first, then match the exact option text in 'answer'. For Bayes' theorem or conditional probability, write out P(A|B) formula and calculate the exact ratio before selecting the letter.
 
 Answer format rules:
 - For 'mcq' (Multiple Choice): "answer" MUST be the synthetic letter of the single best option (e.g. "A", "B", "C", "D").
