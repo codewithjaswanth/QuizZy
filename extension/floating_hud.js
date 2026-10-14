@@ -2,8 +2,8 @@
  * QuizZy - Compact Rectangular Floating Bar & Movable White Dot HUD
  * 
  * Crisp, Shadow-DOM isolated on-page toolbar (~36px height, dark slate #111827).
- * Featuring Movable White Dot mode (double-tap Alt or double-click dot)
- * and double-tap modifier hotkeys (Ctrl, Alt, Fn/Shift).
+ * Featuring Movable White Dot mode (double-tap Z or double-click dot)
+ * and double-tap hotkeys (Ctrl, Z/Alt, Fn/Shift).
  */
 
 (function () {
@@ -481,7 +481,7 @@
   wrapper.className = "quizzy-hud-wrapper";
   wrapper.innerHTML = `
     <!-- Small Movable White Dot (18x18px) with Dark Border -->
-    <div class="hud-mini-dot hidden" id="hud-mini-dot" title="Double-click or double-tap Alt to expand QuizZy"></div>
+    <div class="hud-mini-dot hidden" id="hud-mini-dot" title="Double-click or double-tap Z to expand QuizZy"></div>
 
     <!-- Main Compact Rectangular Bar (~36px height) -->
     <div class="hud-bar" id="hud-full-bar" title="Drag to move bar">
@@ -535,7 +535,7 @@
         </button>
 
         <!-- Minimize to Dot (—) -->
-        <button class="hud-icon-btn" id="hud-btn-min" title="Shrink to Dot (Double-tap Alt)">
+        <button class="hud-icon-btn" id="hud-btn-min" title="Shrink to Dot (Double-tap Z)">
           <svg class="hud-svg" viewBox="0 0 24 24">
             <line x1="5" y1="12" x2="19" y2="12"></line>
           </svg>
@@ -1410,7 +1410,7 @@
   }
 
   // ==========================================================================
-  // Double-Tap Modifier Hotkeys (Ctrl, Alt, Fn / Shift)
+  // Double-Tap Hotkeys (Ctrl, Z / Alt, Fn / Shift)
   // ==========================================================================
   let ctrlDown = false;
   let ctrlComboUsed = false;
@@ -1420,13 +1420,25 @@
   let shiftComboUsed = false;
   let fnDown = false;
   let fnComboUsed = false;
+  let zDown = false;
+  let zComboUsed = false;
 
   const lastTapTimes = {
     Control: 0,
     Alt: 0,
     Shift: 0,
-    Fn: 0
+    Fn: 0,
+    Z: 0
   };
+
+  function isEditableElement(el) {
+    if (!el) return false;
+    const tag = (el.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (el.isContentEditable) return true;
+    if (typeof el.getAttribute === "function" && el.getAttribute("contenteditable") === "true") return true;
+    return false;
+  }
 
   function isFnKey(e) {
     return e.key === "Fn" || e.key === "Function" || e.code === "Fn" || e.key === "Unidentified" || e.keyCode === 255;
@@ -1448,7 +1460,7 @@
         } else {
           setHidden(false);
         }
-      } else if (modName === "Alt") {
+      } else if (modName === "Alt" || modName === "Z") {
         if (e && typeof e.preventDefault === "function") {
           e.preventDefault();
         }
@@ -1506,11 +1518,21 @@
       fnDown = true;
       fnComboUsed = false;
       handleModifierDoubleTap("Fn", e);
+    } else if (e.key === "z" || e.key === "Z" || e.code === "KeyZ") {
+      const activeEl = (typeof document !== "undefined") ? document.activeElement : null;
+      if (!isEditableElement(e.target) && !isEditableElement(activeEl) && !e.ctrlKey && !e.altKey && !e.metaKey && !ctrlDown && !altDown) {
+        zDown = true;
+        zComboUsed = false;
+      } else {
+        zDown = false;
+        zComboUsed = true;
+      }
     } else {
       if (ctrlDown) ctrlComboUsed = true;
       if (altDown) altComboUsed = true;
       if (shiftDown) shiftComboUsed = true;
       if (fnDown) fnComboUsed = true;
+      if (zDown) zComboUsed = true;
     }
   }
 
@@ -1535,6 +1557,12 @@
       if (!fnComboUsed) {
         handleModifierDoubleTap("Fn", e);
       }
+    } else if (e.key === "z" || e.key === "Z" || e.code === "KeyZ") {
+      if (zDown && !zComboUsed) {
+        handleModifierDoubleTap("Z", e);
+      }
+      zDown = false;
+      zComboUsed = false;
     }
   }
 
