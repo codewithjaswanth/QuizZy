@@ -2,10 +2,15 @@
 .venv/
 venv/
 ENV/
+env/
 
-# Environment secrets
+# Environment secrets & credentials (NEVER commit these)
 backend/.env
+backend/.env.*
+!backend/.env.example
 .env
+.env.*
+!.env.example
 .env.local
 
 # Python bytecode & cache
@@ -13,9 +18,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.coverage
+htmlcov/
 
 # Databases
 *.db
+*.sqlite
 *.sqlite3
 
 # Evaluation output artifacts
@@ -24,5 +32,14 @@ eval/results/*.json
 
 # Runtime server logs and supervisor lockfile
 backend/server.log
+backend/server.err.log
 backend/supervisor.lock
 *.log
+
+# IDE, Editor, & OS metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
