@@ -1013,7 +1013,7 @@
       }
     }
 
-    return {
+    const result = {
       success: true,
       subject: subject || "General",
       q_type: qType,
@@ -1026,6 +1026,13 @@
         options_count: options.length
       }
     };
+
+    if (typeof window !== "undefined" && Array.isArray(optionElements) && optionElements.length >= 2) {
+      window.__QUIZZY_LAST_OPTION_ELEMENTS__ = optionElements;
+      window.__QUIZZY_LAST_OPTIONS_TEXT__ = options;
+    }
+
+    return result;
   }
 
   /**

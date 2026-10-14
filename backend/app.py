@@ -279,7 +279,7 @@ async def solve_endpoint(req: SolveRequest) -> SolveResponse:
         confidence_label = "medium"
         confidence_score = 0.67
         auto_eligible = is_ok
-    elif tier == "LOW_FALLBACK_RESCUE":
+    elif tier in ("LOW_FALLBACK_RESCUE", "LOW_FALLBACK"):
         confidence_label = "low"
         confidence_score = 0.5
         auto_eligible = False

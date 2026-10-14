@@ -559,6 +559,14 @@
    * Excludes header/nav text and explanation boxes matching extractor.js rules.
    */
   function findOptionElements(customSelector) {
+    // 1. Direct memory parity with extractor.js if extracted in the same world (zero DOM mutation)
+    if (!customSelector && typeof window !== "undefined" && Array.isArray(window.__QUIZZY_LAST_OPTION_ELEMENTS__) && window.__QUIZZY_LAST_OPTION_ELEMENTS__.length >= 2) {
+      const allConnected = window.__QUIZZY_LAST_OPTION_ELEMENTS__.every(el => el && el.isConnected !== false);
+      if (allConnected) {
+        return window.__QUIZZY_LAST_OPTION_ELEMENTS__;
+      }
+    }
+
     const doc = (typeof document !== "undefined") ? document : null;
     if (!doc) return [];
 
@@ -624,96 +632,281 @@
   }
 
   /**
-   * Smart React click target resolution for MCQ options.
-   * Handles native radio inputs, linked labels, and custom classless React rows (e.g. learning.ccbp.in).
+   * Resolves the Option Row Container and an ordered sequence of clickable candidate targets.
+   * Walks up to find the container that is a child of the 2-6 options parent container.
+   */
+  function resolveOptionRowAndTargets(optEl) {
+    if (!optEl) return { rowEl: null, candidates: [] };
+
+    // 1. Find the Option Row Container (rowEl)
+    let rowEl = optEl;
+    let curr = optEl;
+    for (let depth = 0; depth < 4; depth++) {
+      if (!curr || !curr.parentElement) break;
+      const parent = curr.parentElement;
+      const siblings = Array.from(parent.children || []).filter(isVisible);
+      if (siblings.length >= 2 && siblings.length <= 6) {
+        rowEl = curr;
+        break;
+      }
+      curr = parent;
+    }
+
+    // 2. Gather candidate click targets in priority order:
+    //    1) <input type="radio" | "checkbox">
+    //    2) <label>
+    //    3) [role="radio"] / [role="option"] / button
+    //    4) rowEl itself (full container)
+    //    5) optEl itself (if different from rowEl)
+    //    6) rowEl.firstElementChild (radio circle indicator) and rowEl.lastElementChild (text)
+    const candidates = [];
+    const seen = new Set();
+
+    function addCandidate(el) {
+      if (el && el.nodeType === 1 && !seen.has(el) && isVisible(el) && !isQuizZyInternalElement(el)) {
+        seen.add(el);
+        candidates.push(el);
+      }
+    }
+
+    // 1) Radio inputs
+    const inputs = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("input[type='radio'], input[type='checkbox']")) : [];
+    if (["INPUT"].includes(rowEl.tagName)) inputs.push(rowEl);
+    inputs.forEach(addCandidate);
+
+    // 2) Labels
+    const labels = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("label")) : [];
+    if (rowEl.tagName === "LABEL") labels.push(rowEl);
+    labels.forEach(addCandidate);
+
+    // 3) Role or button targets
+    const roles = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("[role='radio'], [role='option'], button")) : [];
+    roles.forEach(addCandidate);
+
+    // 4) Indicator circle (firstElementChild)
+    if (rowEl.firstElementChild && rowEl.firstElementChild !== rowEl) {
+      addCandidate(rowEl.firstElementChild);
+    }
+
+    // 5) optEl itself (if different from rowEl)
+    if (optEl && optEl !== rowEl) {
+      addCandidate(optEl);
+    }
+
+    // 6) text container (lastElementChild)
+    const lastChild = rowEl.lastElementChild || (rowEl.childNodes && rowEl.childNodes.length > 0 ? rowEl.childNodes[rowEl.childNodes.length - 1] : null);
+    if (lastChild && lastChild.nodeType === 1 && lastChild !== rowEl) {
+      addCandidate(lastChild);
+    }
+
+    // 7) rowEl itself (full container)
+    addCandidate(rowEl);
+
+    return { rowEl, candidates };
+  }
+
+  /**
+   * Dispatches realistic coordinates-aware pointer/mouse event sequence and .click().
+   */
+  function dispatchRealisticClick(el) {
+    if (!el || typeof el.dispatchEvent !== "function") return false;
+
+    try {
+      if (typeof el.focus === "function") el.focus();
+    } catch (_) {}
+
+    let clientX = 0;
+    let clientY = 0;
+    if (typeof el.getBoundingClientRect === "function") {
+      try {
+        const rect = el.getBoundingClientRect();
+        clientX = Math.round(rect.left + rect.width / 2);
+        clientY = Math.round(rect.top + rect.height / 2);
+      } catch (_) {}
+    }
+
+    const mouseInit = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: (typeof window !== "undefined" ? window : null),
+      clientX: clientX,
+      clientY: clientY,
+      button: 0,
+      buttons: 1
+    };
+
+    // Sequence: pointerdown -> mousedown -> pointerup -> mouseup
+    ["pointerdown", "mousedown", "pointerup", "mouseup"].forEach((type) => {
+      try {
+        let ev;
+        if (type.startsWith("pointer") && typeof PointerEvent !== "undefined") {
+          ev = new PointerEvent(type, Object.assign({}, mouseInit, { pointerId: 1, pointerType: "mouse" }));
+        } else if (typeof MouseEvent !== "undefined") {
+          ev = new MouseEvent(type, mouseInit);
+        } else {
+          ev = new Event(type, { bubbles: true, cancelable: true });
+        }
+        el.dispatchEvent(ev);
+      } catch (_) {}
+    });
+
+    // Native .click() or click event dispatch
+    if (typeof el.click === "function") {
+      try {
+        el.click();
+      } catch (_) {}
+    } else {
+      try {
+        const clickEv = (typeof MouseEvent !== "undefined")
+          ? new MouseEvent("click", mouseInit)
+          : new Event("click", { bubbles: true, cancelable: true });
+        el.dispatchEvent(clickEv);
+      } catch (_) {}
+    }
+
+    // If input element, dispatch input & change
+    if (el.tagName === "INPUT") {
+      try {
+        if (!el.checked) el.checked = true;
+        el.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      } catch (_) {}
+    }
+
+    return true;
+  }
+
+  /**
+   * Captures selection state snapshot of an option row.
+   */
+  function captureOptionSnapshot(rowEl) {
+    if (!rowEl) return null;
+
+    let inputsChecked = false;
+    const inputs = rowEl.querySelectorAll ? Array.from(rowEl.querySelectorAll("input[type='radio'], input[type='checkbox']")) : [];
+    if (rowEl.tagName === "INPUT") inputs.push(rowEl);
+    inputsChecked = inputs.some(i => i.checked === true);
+
+    const classes = [rowEl.className || ""];
+    if (rowEl.querySelectorAll) {
+      rowEl.querySelectorAll("*").forEach(c => classes.push(c.className || ""));
+    }
+    const classNames = classes.join(" ");
+
+    const aria = (rowEl.getAttribute ? (rowEl.getAttribute("aria-checked") || rowEl.getAttribute("aria-selected") || rowEl.getAttribute("data-state") || "") : "");
+
+    let styles = "";
+    if (typeof window !== "undefined" && typeof window.getComputedStyle === "function") {
+      try {
+        const cs = window.getComputedStyle(rowEl);
+        styles = `${cs.backgroundColor}|${cs.borderColor}|${cs.outline}|${cs.color}`;
+        if (rowEl.firstElementChild) {
+          const csCircle = window.getComputedStyle(rowEl.firstElementChild);
+          styles += `::circle:${csCircle.backgroundColor}|${csCircle.borderColor}|${csCircle.outline}`;
+        }
+      } catch (_) {}
+    }
+
+    const htmlLength = (rowEl.innerHTML || "").length;
+
+    return { inputsChecked, classNames, aria, styles, htmlLength };
+  }
+
+  /**
+   * Detects whether option row selection state changed compared to beforeSnapshot.
+   */
+  function didOptionSelectionChange(rowEl, beforeSnapshot) {
+    if (!rowEl || !beforeSnapshot) return false;
+    const after = captureOptionSnapshot(rowEl);
+    if (!after) return false;
+
+    if (after.inputsChecked !== beforeSnapshot.inputsChecked) return true;
+    if (after.classNames !== beforeSnapshot.classNames) return true;
+    if (after.aria !== beforeSnapshot.aria) return true;
+    if (after.styles !== beforeSnapshot.styles) return true;
+    if (after.htmlLength !== beforeSnapshot.htmlLength) return true;
+
+    return false;
+  }
+
+  /**
+   * Smart React click target resolution for MCQ options with multi-level escalation
+   * and state change verification (stops immediately when selected!).
    */
   function triggerOptionSelect(targetEl) {
     if (!targetEl) return false;
 
-    const doc = targetEl.ownerDocument || (typeof document !== "undefined" ? document : null);
-    const radio = targetEl.querySelector
-      ? (targetEl.querySelector("input[type='radio'], input[type='checkbox']") || (["INPUT"].includes(targetEl.tagName) ? targetEl : null))
-      : null;
+    const { rowEl, candidates } = resolveOptionRowAndTargets(targetEl);
+    const activeRow = rowEl || targetEl;
 
-    const label = (targetEl.tagName === "LABEL")
-      ? targetEl
-      : (targetEl.querySelector ? targetEl.querySelector("label") : null) ||
-        (radio && radio.id && doc ? doc.querySelector(`label[for="${radio.id}"]`) : null);
+    if (typeof window !== "undefined") {
+      window.__QUIZZY_LAST_SELECTED_OPTION__ = activeRow;
+    }
 
-    // Case A: <input type="radio" | "checkbox"> exists inside targetEl or linked via label
-    if (radio) {
-      if (label) {
-        dispatchClick(label);
-      }
-      if (!radio.checked) {
-        dispatchClick(radio);
-      }
+    const before = captureOptionSnapshot(activeRow);
 
-      if (!radio.checked) {
-        try {
-          if (radio._valueTracker && typeof radio._valueTracker.setValue === "function") {
-            radio._valueTracker.setValue(false);
-          }
-        } catch (_) {}
-
-        try {
-          const proto = (typeof window !== "undefined" && window.HTMLInputElement)
-            ? window.HTMLInputElement.prototype
-            : null;
-          const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "checked") : null;
-          if (descriptor && descriptor.set) {
-            descriptor.set.call(radio, true);
-          } else {
-            radio.checked = true;
-          }
-        } catch (_) {
-          radio.checked = true;
-        }
-
-        try {
-          radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-          radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-          radio.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-        } catch (_) {}
-      }
+    // If input already checked or aria-checked is true, no need to re-click
+    if (before && (before.inputsChecked || before.aria === "true")) {
       return true;
     }
 
-    // Case B: Custom classless React row with NO <input> (e.g. learning.ccbp.in)
-    // 1. Probe whether bubbling click on child reaches targetEl
-    let targetReceivedEvent = false;
-    const probeListener = () => { targetReceivedEvent = true; };
-    if (typeof targetEl.addEventListener === "function") {
-      targetEl.addEventListener("click", probeListener, true);
+    let rowReceivedClick = false;
+    const rowClickListener = () => {
+      rowReceivedClick = true;
+    };
+    if (activeRow && typeof activeRow.addEventListener === "function") {
+      activeRow.addEventListener("click", rowClickListener);
     }
 
-    // 2. Identify interactive or indicator children inside targetEl
-    const directChildren = Array.from(targetEl.children || []).filter(isVisible);
-    const roleEl = targetEl.querySelector ? targetEl.querySelector("[role='radio'], [role='option'], [tabindex]") : null;
-
-    let targetChild = null;
-    if (roleEl && roleEl !== targetEl) {
-      targetChild = roleEl;
-    } else if (directChildren.length > 0) {
-      // Find circle indicator child (element with radio role, circle class, or first child)
-      targetChild = directChildren.find(c => {
-        const cls = String(c.className || "").toLowerCase();
-        const role = c.getAttribute ? c.getAttribute("role") : "";
-        return role === "radio" || role === "checkbox" || cls.includes("circle") || cls.includes("radio") || cls.includes("indicator") || c.tagName === "SVG";
-      }) || directChildren[0];
+    try {
+      // Try candidates in priority order; STOP IMMEDIATELY once selection state changes or row receives click!
+      for (const cand of candidates) {
+        dispatchRealisticClick(cand);
+        if (before && didOptionSelectionChange(activeRow, before)) {
+          return true; // Selected! Stop immediately to prevent toggling off!
+        }
+        if (rowReceivedClick) {
+          // If the full option row container already received the click event via direct click or bubbling,
+          // stop further candidate escalation to prevent duplicate toggling.
+          break;
+        }
+      }
+    } finally {
+      if (activeRow) {
+        if (typeof activeRow.removeEventListener === "function") {
+          try {
+            activeRow.removeEventListener("click", rowClickListener);
+          } catch (_) {}
+        } else if (activeRow.listeners && Array.isArray(activeRow.listeners["click"])) {
+          const idx = activeRow.listeners["click"].indexOf(rowClickListener);
+          if (idx !== -1) activeRow.listeners["click"].splice(idx, 1);
+        }
+      }
     }
 
-    if (targetChild && targetChild !== targetEl) {
-      dispatchClick(targetChild);
+    // Also support classic React property descriptor for hidden radio inputs
+    const radio = activeRow.querySelector ? activeRow.querySelector("input[type='radio']") : null;
+    if (radio && !radio.checked) {
+      try {
+        const proto = (typeof window !== "undefined" && window.HTMLInputElement)
+          ? window.HTMLInputElement.prototype
+          : null;
+        const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "checked") : null;
+        if (descriptor && descriptor.set) {
+          descriptor.set.call(radio, true);
+        } else {
+          radio.checked = true;
+        }
+        radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        radio.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      } catch (_) {}
     }
 
-    // If bubbling didn't trigger listener on targetEl or if targetEl has no children, click targetEl directly
-    if (!targetReceivedEvent) {
-      dispatchClick(targetEl);
-    }
-
-    if (typeof targetEl.removeEventListener === "function") {
-      targetEl.removeEventListener("click", probeListener, true);
+    // Fallback: if no candidates or state change detected via snapshots, ensure activeRow was clicked
+    if (candidates.length === 0) {
+      dispatchRealisticClick(activeRow);
     }
 
     return true;
@@ -1324,6 +1517,10 @@
     findQuizCard,
     findClasslessOptionElements,
     dispatchClick,
+    dispatchRealisticClick,
+    resolveOptionRowAndTargets,
+    captureOptionSnapshot,
+    didOptionSelectionChange,
     findOptionElements,
     triggerOptionSelect,
     executeMcqAction,

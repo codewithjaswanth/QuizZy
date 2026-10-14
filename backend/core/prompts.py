@@ -18,11 +18,14 @@ DO NOT include any internal thinking, deliberation, or <think>...</think> tags. 
 
 OUTPUT FORMAT INSTRUCTION:
 You MUST respond ONLY with a single valid JSON object. No Markdown code fences, no introductory text, no trailing text.
-The JSON object must match this schema:
+The JSON object must put "reason" FIRST and "answer" SECOND:
 {
-  "answer": <answer_value>,
-  "reason": "<concise explanation, at most 20 words>"
+  "reason": "<concise step-by-step calculation, derivation, or code trace, at most 30 words>",
+  "answer": <answer_value>
 }
+
+CRITICAL CALCULATION ORDER INSTRUCTION:
+Always compute the exact mathematical formula, count, or code trace inside 'reason' FIRST before writing the final synthetic option letter ('A' through 'F') in 'answer'.
 
 Answer format rules:
 - For 'mcq' (Multiple Choice): "answer" MUST be the synthetic letter of the single best option (e.g. "A", "B", "C", "D").
@@ -90,7 +93,7 @@ def build_user_prompt(
     if search_snippets:
         lines.append("Use the factual evidence in <untrusted_search_context> to resolve the answer.")
 
-    lines.append('Remember: output ONLY the raw JSON object {"answer": ..., "reason": "..."}. Skip internal thinking completely. /no_think')
+    lines.append('Remember: compute calculation inside "reason" FIRST, then write synthetic letter in "answer". Output ONLY raw JSON: {"reason": "...", "answer": "..."}. /no_think')
     return "\n".join(lines)
 
 
@@ -107,3 +110,36 @@ def build_prompt_messages(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
+
+
+def build_arbiter_messages(
+    subject: str,
+    q_type: str,
+    question: str,
+    options: List[str],
+    candidate_a: Optional[str] = None,
+    candidate_b: Optional[str] = None,
+) -> List[dict]:
+    """
+    Build contrastive tie-breaker messages for the fast Groq Arbiter.
+    Presents both candidate answers and explicitly instructs step-by-step
+    re-derivation before selecting the true answer.
+    """
+    user_content = build_user_prompt(subject, q_type, question, options)
+    contrast_lines = ["\nCONTRASTIVE TIE-BREAKER DISAGREEMENT:"]
+    if candidate_a:
+        contrast_lines.append(f"- Solver 1 candidate: {candidate_a}")
+    if candidate_b:
+        contrast_lines.append(f"- Solver 2 candidate: {candidate_b}")
+    contrast_lines.append(
+        "Two independent solvers arrived at different candidate answers. "
+        "Carefully re-evaluate the question from first principles. "
+        "Perform the exact mathematical calculation, code trace, or rule deduction in 'reason' FIRST. "
+        "Then select the strictly correct option in 'answer'."
+    )
+    user_content += "\n".join(contrast_lines)
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+

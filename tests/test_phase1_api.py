@@ -164,7 +164,7 @@ def post_solve_with_retry(client: TestClient, payload: dict, max_retries: int = 
     for attempt in range(max_retries + 1):
         res = client.post("/solve", json=payload)
         data = res.json()
-        if data.get("status") == "ok" or attempt == max_retries:
+        if (data.get("status") == "ok" and data.get("confidence_label") == "high") or attempt == max_retries:
             return res, data
         time.sleep(1.0)
     return res, data

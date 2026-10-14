@@ -1234,6 +1234,136 @@ async function main() {
     throw new Error(`Expected submitClicked === 1 and nextClicked === 1, got submit=${submitClicked}, next=${nextClicked}`);
   }
 
+  // =========================================================================
+  // Test 14: ARRANGE Combinatorics extraction, memory-shared options parity,
+  // and click escalation state verification stopping immediately on change
+  // =========================================================================
+  let opt1ClickCount = 0;
+  let opt1CircleSelected = false;
+
+  const row14_0 = el("div", "sc-opt-row", {}, [
+    el("div", "sc-circle", {}, []),
+    el("div", "sc-opt-text", {}, ["2520"])
+  ]);
+
+  const circle1 = el("div", "sc-circle", {}, []);
+  const row14_1 = el("div", "sc-opt-row", {}, [
+    circle1,
+    el("div", "sc-opt-text", {}, ["1260"])
+  ]);
+
+  // Attach click listener ONLY to the outer row or circle
+  row14_1.addEventListener("click", () => {
+    opt1ClickCount++;
+    opt1CircleSelected = !opt1CircleSelected;
+    if (opt1CircleSelected) {
+      circle1.className = "sc-circle selected";
+      circle1.innerHTML = '<span class="dot"></span>';
+    } else {
+      circle1.className = "sc-circle";
+      circle1.innerHTML = '';
+    }
+  });
+
+  const row14_2 = el("div", "sc-opt-row", {}, [
+    el("div", "sc-circle", {}, []),
+    el("div", "sc-opt-text", {}, ["5040"])
+  ]);
+
+  const row14_3 = el("div", "sc-opt-row", {}, [
+    el("div", "sc-circle", {}, []),
+    el("div", "sc-opt-text", {}, ["840"])
+  ]);
+
+  const test14Doc = el("html", "", {}, [
+    el("head", "", {}, []),
+    el("body", "", {}, [
+      el("div", "sc-card-hash", {}, [
+        el("div", "sc-q-section", {}, [
+          el("p", "", {}, ["How many distinct arrangements can be made using all the letters of the word ARRANGE?"])
+        ]),
+        el("div", "sc-opts-section", {}, [
+          row14_0,
+          row14_1,
+          row14_2,
+          row14_3
+        ]),
+        el("div", "sc-actions", {}, [
+          el("button", "btn-submit", {}, ["SUBMIT"])
+        ])
+      ])
+    ])
+  ]);
+  test14Doc.body = test14Doc.childNodes[1];
+  test14Doc.documentElement = test14Doc;
+  test14Doc.getElementById = (id) => test14Doc.querySelector('#' + id);
+  test14Doc.createElement = (tag) => new MockNode(tag);
+
+  const test14Sandbox = {
+    window: null,
+    document: test14Doc,
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1", cursor: "pointer" }),
+    Event: global.Event,
+    MouseEvent: global.MouseEvent,
+    PointerEvent: global.PointerEvent,
+    HTMLInputElement: global.HTMLInputElement,
+    HTMLTextAreaElement: global.HTMLTextAreaElement,
+    Date,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Set,
+    RegExp,
+    console,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id)
+  };
+  test14Sandbox.window = test14Sandbox;
+
+  // 1. Run extractor
+  const test14Extracted = vm.runInNewContext(extractorCode, test14Sandbox);
+  if (!test14Extracted || !test14Extracted.success) {
+    throw new Error(`Test 14 extraction failed: ${JSON.stringify(test14Extracted)}`);
+  }
+  if (test14Extracted.options.length !== 4) {
+    throw new Error(`Test 14 expected 4 options, got ${test14Extracted.options.length}`);
+  }
+  if (test14Extracted.options[1] !== "1260") {
+    throw new Error(`Test 14 expected option 1 to be '1260', got '${test14Extracted.options[1]}'`);
+  }
+
+  // 2. Verify window.__QUIZZY_LAST_OPTION_ELEMENTS__ was populated in JS memory
+  if (!Array.isArray(test14Sandbox.window.__QUIZZY_LAST_OPTION_ELEMENTS__) || test14Sandbox.window.__QUIZZY_LAST_OPTION_ELEMENTS__.length !== 4) {
+    throw new Error("Test 14: window.__QUIZZY_LAST_OPTION_ELEMENTS__ was not populated in JS memory!");
+  }
+
+  // 3. Run executor selecting option 1 ("1260")
+  const test14Executor = vm.runInNewContext(executorCode, test14Sandbox);
+  const test14McqRes = test14Executor.executeMcqAction({
+    targetIndex: 1,
+    targetText: "1260",
+    answer: "B",
+    letter: "B"
+  });
+
+  if (!test14McqRes || !test14McqRes.success) {
+    throw new Error(`Test 14 executeMcqAction failed: ${JSON.stringify(test14McqRes)}`);
+  }
+  if (test14McqRes.selected_index !== 1) {
+    throw new Error(`Test 14 expected selected_index 1, got ${test14McqRes.selected_index}`);
+  }
+  // Verify click escalation stopped immediately upon detecting state change
+  if (opt1ClickCount !== 1) {
+    throw new Error(`Test 14 expected opt1ClickCount === 1 (stopped on change), got ${opt1ClickCount}`);
+  }
+  if (!opt1CircleSelected) {
+    throw new Error(`Test 14 option 1 circle was not selected after execution!`);
+  }
+
   console.log("NODE_RUNTIME_TESTS_OK");
   process.exit(0);
 }
@@ -1343,6 +1473,28 @@ def test_sidepanel_html_escaping():
     print("  -> Passed sidepanel.js HTML escaping audit: all dynamic text safely escaped.")
 
 
+def test_arrange_combinatorics_reason_first_solver():
+    """Verify ARRANGE question solves to 1260 with reason-first computation."""
+    print("\n[Test 10] Testing Live Combinatorics Solver on ARRANGE question...")
+    import asyncio
+    from backend.core.llm_client import solve_question
+
+    solver_res = asyncio.run(
+        solve_question(
+            subject="Mathematics",
+            q_type="mcq",
+            question="How many distinct arrangements can be made using all the letters of the word ARRANGE?",
+            options=["2520", "1260", "5040", "840"],
+        )
+    )
+    assert solver_res.status == "OK", f"Solver failed: {solver_res}"
+    assert solver_res.canonical_key == "B", f"Expected 'B', got {solver_res.canonical_key}"
+    assert solver_res.selected_index == 1, f"Expected selected_index 1, got {solver_res.selected_index}"
+    assert solver_res.selected_text == "1260", f"Expected '1260', got {solver_res.selected_text}"
+    assert solver_res.reason and "1260" in solver_res.reason, f"Expected '1260' derivation in reason, got {solver_res.reason}"
+    print(f"  -> Successfully solved ARRANGE: Answer={solver_res.canonical_key} ({solver_res.selected_text}), Reason={solver_res.reason}")
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("RUNNING LIVE-SITE COMPATIBILITY VERIFICATION SUITE")
@@ -1357,8 +1509,10 @@ if __name__ == "__main__":
     test_nodejs_runtime_verification()
     test_backend_normalizer_math_and_code_non_collision()
     test_sidepanel_html_escaping()
+    test_arrange_combinatorics_reason_first_solver()
 
     print("\n" + "=" * 70)
     print("ALL LIVE-SITE COMPATIBILITY TESTS PASSED (100% SUCCESS)")
     print("=" * 70)
+
 

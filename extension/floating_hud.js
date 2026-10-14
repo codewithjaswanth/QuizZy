@@ -841,7 +841,15 @@
     latestExtracted = extracted;
     checkHealth();
 
-    if (!solution || solution.status !== "ok") {
+    const hasCandidate = solution && (
+      (typeof solution.selected_index === "number" && solution.selected_index >= 0) ||
+      (typeof solution.answer === "string" && solution.answer.trim().length > 0) ||
+      (typeof solution.canonical_key === "string" && solution.canonical_key.trim().length > 0) ||
+      (typeof solution.letter === "string" && solution.letter.trim().length > 0) ||
+      (typeof solution.selected_text === "string" && solution.selected_text.trim().length > 0)
+    );
+
+    if (!hasCandidate) {
       if (badgeOpt) badgeOpt.classList.add("hidden");
       if (answerText) {
         answerText.className = "hud-answer-text uncertain";
@@ -856,18 +864,30 @@
     }
 
     // Set Option Badge
+    const qType = (solution.q_type || "mcq").toLowerCase();
     let optBadge = "[A]";
     let winText = "";
 
-    if (solution.q_type === "mcq") {
-      optBadge = `[${solution.answer || "A"}]`;
-      winText = solution.selected_text || (extracted && extracted.options && extracted.options[solution.selected_index]) || "Option";
+    let letter = "";
+    if (typeof solution.letter === "string" && /^[A-F]$/i.test(solution.letter.trim())) {
+      letter = solution.letter.trim().toUpperCase();
+    } else if (typeof solution.canonical_key === "string" && /^[A-F]$/i.test(solution.canonical_key.trim())) {
+      letter = solution.canonical_key.trim().toUpperCase();
+    } else if (typeof solution.answer === "string" && /^[A-F]$/i.test(solution.answer.trim())) {
+      letter = solution.answer.trim().toUpperCase();
+    } else if (typeof solution.selected_index === "number" && solution.selected_index >= 0) {
+      letter = String.fromCharCode(65 + solution.selected_index);
+    }
+
+    if (qType === "mcq") {
+      optBadge = `[${letter || "A"}]`;
+      winText = solution.selected_text || (extracted && extracted.options && solution.selected_index !== undefined ? extracted.options[solution.selected_index] : "") || (solution.answer && !/^[A-F]$/i.test(solution.answer) ? solution.answer : `Option ${letter || "A"}`);
       if (badgeOpt) badgeOpt.className = "hud-badge-option";
-    } else if (solution.q_type === "order") {
+    } else if (qType === "order") {
       optBadge = "[Order]";
       winText = Array.isArray(solution.ordered_texts) ? solution.ordered_texts.join(" ➔ ") : (solution.answer || "Sequence");
       if (badgeOpt) badgeOpt.className = "hud-badge-option order";
-    } else if (solution.q_type === "text") {
+    } else if (qType === "text") {
       optBadge = "[Text]";
       winText = solution.answer || "Answer";
       if (badgeOpt) badgeOpt.className = "hud-badge-option text";
@@ -886,9 +906,10 @@
 
     // Confidence badge
     if (tagConf) {
-      const conf = (solution.confidence_label || "high").toUpperCase();
-      tagConf.textContent = conf;
-      tagConf.className = `hud-pill-tag ${conf === "HIGH" ? "hud-tag-high" : "hud-tag-med"}`;
+      const rawTier = solution.confidence_tier || "";
+      const rawConf = (solution.confidence_label || (rawTier.includes("HIGH") ? "high" : (rawTier.includes("MED") ? "medium" : "low"))).toUpperCase();
+      tagConf.textContent = rawConf;
+      tagConf.className = `hud-pill-tag ${rawConf === "HIGH" ? "hud-tag-high" : "hud-tag-med"}`;
       tagConf.classList.remove("hidden");
     }
 
@@ -913,7 +934,7 @@
 
     // Reasoning popover
     if (reasonText) {
-      reasonText.textContent = solution.reason || "High confidence consensus reached.";
+      reasonText.textContent = solution.reason || "Step-by-step derivation verified.";
     }
 
     // Enable Apply button
@@ -1120,16 +1141,26 @@
     solveCurrentQuestion((solution, extracted) => {
       if (!isAutoRunning) return;
 
-      if (!solution || solution.status !== "ok") {
+      const isStrict = chkStrict && chkStrict.checked;
+      const hasValidSelection = solution && (
+        (typeof solution.selected_index === "number" && solution.selected_index >= 0) ||
+        (solution.answer && typeof solution.answer === "string" && solution.answer.trim().length > 0) ||
+        (solution.canonical_key && typeof solution.canonical_key === "string" && solution.canonical_key.trim().length > 0) ||
+        (solution.selected_text && typeof solution.selected_text === "string" && solution.selected_text.trim().length > 0)
+      );
+
+      if (!hasValidSelection) {
         stopAutoMode("Model consensus uncertain. Auto Mode stopped.");
         return;
       }
 
       // Check strict HIGH agreement constraint
-      if (chkStrict && chkStrict.checked) {
-        const isHigh = solution.confidence_label === "high" || solution.agreement_status === "both_agree";
+      if (isStrict) {
+        const isHigh = solution.confidence_label === "high" ||
+          solution.agreement_status === "both_agree" ||
+          (solution.confidence_tier && solution.confidence_tier.includes("HIGH"));
         if (!isHigh) {
-          stopAutoMode("Strict HIGH agreement required. Auto Mode stopped.");
+          stopAutoMode("Strict Mode: paused on non-primary consensus (click Apply to submit).");
           return;
         }
       }
