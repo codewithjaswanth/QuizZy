@@ -117,39 +117,52 @@
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
     }
 
-    /* Small Movable White Dot (18x18px) with Dark Border */
+    /* Very Small Movable White Dot (9x9px) with Dark Border */
     .hud-mini-dot {
-      width: 18px;
-      height: 18px;
+      width: 9px;
+      height: 9px;
       border-radius: 50%;
       background: #ffffff;
-      border: 2.5px solid #111827;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+      border: 1.5px solid #111827;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
       cursor: grab;
       user-select: none;
       transition: transform 0.12s ease;
       display: block;
       position: relative;
+      box-sizing: border-box;
+    }
+
+    /* Generous invisible grab zone so the tiny dot is effortless to drag & click */
+    .hud-mini-dot::before {
+      content: "";
+      position: absolute;
+      top: -9px;
+      left: -9px;
+      right: -9px;
+      bottom: -9px;
+      border-radius: 50%;
+      cursor: grab;
     }
 
     .hud-mini-dot:hover {
-      transform: scale(1.15);
+      transform: scale(1.35);
     }
 
     .hud-mini-dot.dragging {
       cursor: grabbing;
-      transform: scale(1.2);
+      transform: scale(1.5);
     }
 
     .hud-mini-dot.auto-running {
       border-color: #10B981;
-      box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
+      box-shadow: 0 0 6px rgba(16, 185, 129, 0.85);
       animation: hud-dot-pulse 1s infinite alternate;
     }
 
     @keyframes hud-dot-pulse {
       0% { transform: scale(1); }
-      100% { transform: scale(1.2); }
+      100% { transform: scale(1.4); }
     }
 
     /* Left Status Dot */
@@ -480,7 +493,7 @@
   const wrapper = document.createElement("div");
   wrapper.className = "quizzy-hud-wrapper";
   wrapper.innerHTML = `
-    <!-- Small Movable White Dot (18x18px) with Dark Border -->
+    <!-- Very Small Movable White Dot (9x9px) with Dark Border -->
     <div class="hud-mini-dot hidden" id="hud-mini-dot" title="Double-click or double-tap Z to expand QuizZy"></div>
 
     <!-- Main Compact Rectangular Bar (~36px height) -->
@@ -644,14 +657,14 @@
   }
 
   function applyDotPosition(pos) {
-    let x = (pos && typeof pos.left === "number") ? pos.left : (window.innerWidth - 34);
-    let y = (pos && typeof pos.top === "number") ? pos.top : (window.innerHeight - 34);
+    let x = (pos && typeof pos.left === "number") ? pos.left : (window.innerWidth - 20);
+    let y = (pos && typeof pos.top === "number") ? pos.top : (window.innerHeight - 20);
 
-    const maxX = Math.max(0, window.innerWidth - 24);
-    const maxY = Math.max(0, window.innerHeight - 24);
+    const maxX = Math.max(0, window.innerWidth - 14);
+    const maxY = Math.max(0, window.innerHeight - 14);
 
-    x = Math.max(8, Math.min(x, maxX));
-    y = Math.max(8, Math.min(y, maxY));
+    x = Math.max(6, Math.min(x, maxX));
+    y = Math.max(6, Math.min(y, maxY));
 
     wrapper.style.left = `${x}px`;
     wrapper.style.top = `${y}px`;
@@ -764,8 +777,8 @@
     let newLeft = startLeft + dx;
     let newTop = startTop + dy;
 
-    newLeft = Math.max(8, Math.min(newLeft, window.innerWidth - 24));
-    newTop = Math.max(8, Math.min(newTop, window.innerHeight - 24));
+    newLeft = Math.max(6, Math.min(newLeft, window.innerWidth - 14));
+    newTop = Math.max(6, Math.min(newTop, window.innerHeight - 14));
 
     wrapper.style.left = `${newLeft}px`;
     wrapper.style.top = `${newTop}px`;

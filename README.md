@@ -19,7 +19,7 @@ graph TD
     end
 
     subgraph Extension ["Chrome MV3 Extension (Isolated World)"]
-        HUD["Compact Rectangular Floating Bar / 18px Movable White Dot (Shadow DOM)"]
+        HUD["Compact Rectangular Floating Bar / Very Small Movable White Dot (Shadow DOM)"]
         Extractor["extractor.js (Read-Only, Zero-DOM-Mutation, LaTeX Serializer)"]
         Executor["executor.js (React Native Prop Setter, Drag Sim, 2-Step SUBMIT->NEXT)"]
         BG["background.js (Service Worker, Port Router, Health Monitor)"]
@@ -72,7 +72,7 @@ graph TD
 
 ### 3. Compact Rectangular Floating Bar & Movable White Dot HUD
 - **Crisp Rectangular Geometry:** Replaced bulky pills and blurry glow drop-shadows with a streamlined rectangular bar (`36px` height, `border-radius: 6px`, dark slate `#111827`, `1px solid #374151`, subtle shadow `0 2px 8px rgba(0,0,0,0.35)`).
-- **Movable White Dot Mode:** Double-clicking `Z` shrinks the rectangular bar into an ultra-discreet `18px x 18px` white circular dot with a dark border. The dot is freely draggable to any viewport corner, saving coordinates to `chrome.storage.local`. Double-clicking the dot restores the bar.
+- **Movable White Dot Mode:** Double-clicking `Z` shrinks the rectangular bar into an ultra-discreet, very small white circular dot with a dark border (`9px x 9px`). The dot is freely draggable anywhere on the viewport (with an invisible expanded grab zone), saving custom coordinates to `chrome.storage.local`. Double-clicking the dot restores the bar.
 - **Input-Guarded Hotkeys:**
   - **Double-Tap `Ctrl`:** Hide or show QuizZy.
   - **Double-Tap `Z`:** Toggle between Rectangular Bar and Movable White Dot (with `Alt` fallback). Bypassed inside `<input>`, `<textarea>`, and `contenteditable` elements to avoid interrupting typing.
