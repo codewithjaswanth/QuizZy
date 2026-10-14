@@ -156,7 +156,7 @@ async def test_3_disagreement_rescued_by_searxng():
 
     call_count = 0
 
-    async def mock_call_model(client, provider, model, messages, api_key, timeout_ms, q_type, options):
+    async def mock_call_model(client, provider, model, messages, api_key, timeout_ms, q_type, options, *args, **kwargs):
         nonlocal call_count
         call_count += 1
         # Call 1: primary_a -> Sydney (A)

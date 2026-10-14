@@ -399,6 +399,32 @@ async def call_single_completion(
         elif response.status_code in (401, 402, 403):
             quarantine_key(api_key, response.status_code)
             return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
+        elif provider == "groq" and response.status_code in (400, 404):
+            fallback_map = {
+                "qwen/qwen3-32b": "qwen/qwen3.8-27b",
+                "qwen/qwen3.8-27b": "qwen/qwen3-32b",
+                "llama-3.3-70b-versatile": "openai/gpt-oss-20b",
+            }
+            alt_model = fallback_map.get(model)
+            if alt_model and alt_model != model:
+                rem_timeout = max(0.1, timeout_sec - (time.perf_counter() - t0))
+                if rem_timeout > 0.15:
+                    alt_payload = dict(payload)
+                    alt_payload["model"] = alt_model
+                    try:
+                        alt_resp = await client.post(url, headers=headers, json=alt_payload, timeout=rem_timeout)
+                        if alt_resp.status_code == 200:
+                            alt_data = alt_resp.json()
+                            alt_choices = alt_data.get("choices", [])
+                            if alt_choices and "message" in alt_choices[0]:
+                                alt_msg = alt_choices[0]["message"]
+                                alt_content = alt_msg.get("content") or alt_msg.get("reasoning") or alt_msg.get("reasoning_content") or ""
+                                if str(alt_content).strip():
+                                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                                    return str(alt_content), elapsed_ms, None
+                    except Exception:
+                        pass
+            return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
         else:
             if provider == "openrouter" and response.status_code in (404, 500, 502, 503, 504):
                 quarantine_model(model, 60.0)
@@ -425,7 +451,7 @@ async def call_model_with_budget_retry(
     timeout_ms: float,
     q_type: str,
     options: List[str],
-    max_tokens: int = 600,
+    max_tokens: int = 1024,
 ) -> Tuple[Optional[str], Optional[ParsedLLMResponse], Optional[NormalizedAnswer], float, Optional[str]]:
     """
     Call model with budget-aware single fast retry on transient 5xx, network error,
@@ -944,6 +970,79 @@ async def check_models(config_path: Optional[str] = None) -> bool:
     return overall_pass
 
 
+async def run_groq_arbiter_fallback(
+    client: httpx.AsyncClient,
+    subject: str,
+    q_type: str,
+    question: str,
+    options: List[str],
+    candidate_a: Optional[str] = None,
+    candidate_b: Optional[str] = None,
+    arbiter_model: str = "llama-3.3-70b-versatile",
+    timeout_ms: float = 1200.0,
+    groq_key: Optional[str] = None,
+) -> Tuple[Optional[SolverResponse], List[str], Dict[str, Any]]:
+    """
+    Run fast Groq Arbiter tie-breaker with contrastive step-by-step verification.
+    Uses llama-3.3-70b-versatile (a distinct 3rd model family on Groq, with transparent
+    fallback to openai/gpt-oss-20b if model is unavailable on the current API tier).
+    """
+    if not groq_key:
+        groq_keys = load_groq_api_keys()
+        groq_key = groq_keys[0] if groq_keys else ""
+    if not groq_key:
+        return None, [], {"error": "NO_GROQ_KEY", "success": False}
+
+    t0 = time.perf_counter()
+    models_called = [f"groq_arbiter:{arbiter_model}"]
+    arb_messages = build_arbiter_messages(
+        subject=subject,
+        q_type=q_type,
+        question=question,
+        options=options,
+        candidate_a=candidate_a,
+        candidate_b=candidate_b,
+    )
+    (raw_arb, parsed_arb, norm_arb, el_arb, err_arb) = await call_model_with_budget_retry(
+        client=client,
+        provider="groq",
+        model=arbiter_model,
+        messages=arb_messages,
+        api_key=groq_key,
+        timeout_ms=timeout_ms,
+        q_type=q_type,
+        options=options,
+        max_tokens=600,
+    )
+    succ_arb = bool(not err_arb and norm_arb and parsed_arb)
+    details = {
+        "model": arbiter_model,
+        "success": succ_arb,
+        "error": err_arb,
+        "canonical_key": norm_arb.canonical_key if norm_arb else None,
+        "reason": parsed_arb.reason if parsed_arb else None,
+        "latency_ms": el_arb,
+    }
+    if not succ_arb or not norm_arb:
+        return None, models_called, details
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    sol = SolverResponse(
+        status="OK",
+        confidence_tier="MEDIUM_TIEBREAKER_AGREE",
+        canonical_key=norm_arb.canonical_key,
+        selected_index=norm_arb.selected_index,
+        selected_text=norm_arb.selected_text,
+        permutation_indices=norm_arb.permutation_indices,
+        ordered_texts=norm_arb.ordered_texts,
+        reason=parsed_arb.reason or "Groq arbiter contrastive derivation.",
+        latency_ms=elapsed_ms,
+        models_called=models_called,
+        agreement_details={"groq_arbiter": details},
+    )
+    return sol, models_called, details
+
+
 async def solve_question(
     subject: str,
     q_type: str,
@@ -1126,81 +1225,6 @@ async def solve_question(
                 error="Remaining budget <= 200ms before fallback",
             )
 
-        # STAGE 2-GROQ: Fast Groq Arbiter on Disagreement / Single-Primary
-        # Uses fast Groq completion with reason-first step-by-step verification
-        norm_arb = None
-        parsed_arb = None
-        succ_arb = False
-        arbiter_model = config.get("arbiter", {}).get("model") or "openai/gpt-oss-120b"
-        if groq_key and remaining_ms >= 550.0 and not get_healthy_openrouter_keys():
-            cand_a_str = f"Option {norm_a.canonical_key}: {norm_a.selected_text}" if (norm_a and norm_a.canonical_key) else None
-            cand_b_str = f"Option {norm_b.canonical_key}: {norm_b.selected_text}" if (norm_b and norm_b.canonical_key) else None
-            arb_messages = build_arbiter_messages(
-                subject=subject,
-                q_type=q_type,
-                question=question,
-                options=options,
-                candidate_a=cand_a_str,
-                candidate_b=cand_b_str,
-            )
-            arb_timeout_ms = min(1100.0, remaining_ms - 200.0)
-            models_called.append(f"groq_arbiter:{arbiter_model}")
-            (raw_arb, parsed_arb, norm_arb, el_arb, err_arb) = await call_model_with_budget_retry(
-                client=client,
-                provider="groq",
-                model=arbiter_model,
-                messages=arb_messages,
-                api_key=groq_key,
-                timeout_ms=arb_timeout_ms,
-                q_type=q_type,
-                options=options,
-                max_tokens=600,
-            )
-            succ_arb = bool(not err_arb and norm_arb and parsed_arb)
-            agreement_details["groq_arbiter"] = {
-                "model": arbiter_model,
-                "success": succ_arb,
-                "error": err_arb,
-                "canonical_key": norm_arb.canonical_key if norm_arb else None,
-                "reason": parsed_arb.reason if parsed_arb else None,
-                "latency_ms": el_arb,
-            }
-
-            if succ_arb and norm_arb:
-                total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
-                if succ_a and norm_a and (norm_arb.canonical_key == norm_a.canonical_key):
-                    reason = parsed_arb.reason or (parsed_a.reason if parsed_a else "")
-                    return SolverResponse(
-                        status="OK",
-                        confidence_tier="MEDIUM_TIEBREAKER_AGREE",
-                        canonical_key=norm_a.canonical_key,
-                        selected_index=norm_a.selected_index,
-                        selected_text=norm_a.selected_text,
-                        permutation_indices=norm_a.permutation_indices,
-                        ordered_texts=norm_a.ordered_texts,
-                        reason=reason,
-                        latency_ms=total_elapsed_ms,
-                        models_called=models_called,
-                        agreement_details=agreement_details,
-                    )
-                if succ_b and norm_b and (norm_arb.canonical_key == norm_b.canonical_key):
-                    reason = parsed_arb.reason or (parsed_b.reason if parsed_b else "")
-                    return SolverResponse(
-                        status="OK",
-                        confidence_tier="MEDIUM_TIEBREAKER_AGREE",
-                        canonical_key=norm_b.canonical_key,
-                        selected_index=norm_b.selected_index,
-                        selected_text=norm_b.selected_text,
-                        permutation_indices=norm_b.permutation_indices,
-                        ordered_texts=norm_b.ordered_texts,
-                        reason=reason,
-                        latency_ms=total_elapsed_ms,
-                        models_called=models_called,
-                        agreement_details=agreement_details,
-                    )
-
-            remaining_ms = hard_budget_ms - ((time.perf_counter() - t0) * 1000.0)
-
         # STAGE 2A: SearXNG Factual Search Fallback
         searxng_url, searxng_enabled = get_searxng_config()
         searxng_timeout_ms = float(timeouts.get("searxng_timeout_ms", 650))
@@ -1324,33 +1348,80 @@ async def solve_question(
 
             # Update remaining_ms after SearXNG attempt
             remaining_ms = hard_budget_ms - ((time.perf_counter() - t0) * 1000.0)
-            if remaining_ms <= 200.0:
-                penalty = hard_budget_ms if (err_a or err_b) else ((time.perf_counter() - t0) * 1000.0)
-                best_n = norm_arb if (succ_arb and norm_arb) else (norm_a if (succ_a and norm_a) else (norm_b if (succ_b and norm_b) else None))
-                best_r = (parsed_arb.reason if parsed_arb else "") if succ_arb else ((parsed_a.reason if parsed_a else "") if succ_a else ((parsed_b.reason if parsed_b else "") if succ_b else ""))
-                if best_n is not None:
-                    return SolverResponse(
-                        status="OK",
-                        confidence_tier="LOW_FALLBACK",
-                        canonical_key=best_n.canonical_key,
-                        selected_index=best_n.selected_index,
-                        selected_text=best_n.selected_text,
-                        permutation_indices=best_n.permutation_indices,
-                        ordered_texts=best_n.ordered_texts,
-                        reason=best_r or "Best candidate derivation.",
-                        latency_ms=penalty,
-                        models_called=models_called,
-                        agreement_details=agreement_details,
-                        error="Budget exhausted after SearXNG; returned available candidate",
-                    )
+
+        # STAGE 2-GROQ: Fast Groq Arbiter on Disagreement / Single-Primary
+        # Uses fast Groq completion with reason-first step-by-step verification
+        succ_arb = False
+        arbiter_model = config.get("arbiter", {}).get("model") or "llama-3.3-70b-versatile"
+        if groq_key and remaining_ms >= 400.0:
+            cand_a_str = f"Option {norm_a.canonical_key}: {norm_a.selected_text}" if (norm_a and norm_a.canonical_key) else None
+            cand_b_str = f"Option {norm_b.canonical_key}: {norm_b.selected_text}" if (norm_b and norm_b.canonical_key) else None
+            arb_timeout_ms = min(1100.0, remaining_ms - 150.0)
+            arb_sol, arb_models, arb_details = await run_groq_arbiter_fallback(
+                client=client,
+                subject=subject,
+                q_type=q_type,
+                question=question,
+                options=options,
+                candidate_a=cand_a_str,
+                candidate_b=cand_b_str,
+                arbiter_model=arbiter_model,
+                timeout_ms=arb_timeout_ms,
+                groq_key=groq_key,
+            )
+            models_called.extend(arb_models)
+            agreement_details["groq_arbiter"] = arb_details
+            if arb_sol is not None:
+                succ_arb = True
+                norm_arb_key = arb_details.get("canonical_key")
+                if succ_a and norm_a and (norm_arb_key == norm_a.canonical_key):
+                    total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    arb_sol.latency_ms = total_elapsed_ms
+                    arb_sol.models_called = models_called
+                    arb_sol.agreement_details = agreement_details
+                    return arb_sol
+                elif succ_b and norm_b and (norm_arb_key == norm_b.canonical_key):
+                    total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    arb_sol.latency_ms = total_elapsed_ms
+                    arb_sol.models_called = models_called
+                    arb_sol.agreement_details = agreement_details
+                    return arb_sol
+                elif not succ_a or not succ_b:
+                    total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    arb_sol.latency_ms = total_elapsed_ms
+                    arb_sol.models_called = models_called
+                    arb_sol.agreement_details = agreement_details
+                    return arb_sol
+
+            remaining_ms = hard_budget_ms - ((time.perf_counter() - t0) * 1000.0)
+
+        if remaining_ms <= 200.0:
+            penalty = hard_budget_ms if (err_a or err_b) else ((time.perf_counter() - t0) * 1000.0)
+            best_n = norm_a if (succ_a and norm_a) else (norm_b if (succ_b and norm_b) else None)
+            best_r = (parsed_a.reason if parsed_a else "") if succ_a else ((parsed_b.reason if parsed_b else "") if succ_b else "")
+            if best_n is not None:
                 return SolverResponse(
-                    status="UNCERTAIN",
-                    confidence_tier="UNCERTAIN_BUDGET_EXHAUSTED",
+                    status="OK",
+                    confidence_tier="LOW_FALLBACK",
+                    canonical_key=best_n.canonical_key,
+                    selected_index=best_n.selected_index,
+                    selected_text=best_n.selected_text,
+                    permutation_indices=best_n.permutation_indices,
+                    ordered_texts=best_n.ordered_texts,
+                    reason=best_r or "Best candidate derivation.",
                     latency_ms=penalty,
                     models_called=models_called,
                     agreement_details=agreement_details,
-                    error="Budget exhausted after SearXNG grounding",
+                    error="Budget exhausted before fallback pool; returned available candidate",
                 )
+            return SolverResponse(
+                status="UNCERTAIN",
+                confidence_tier="UNCERTAIN_BUDGET_EXHAUSTED",
+                latency_ms=penalty,
+                models_called=models_called,
+                agreement_details=agreement_details,
+                error="Budget exhausted before fallback pool",
+            )
 
         # STAGE 2B: Parallel Hedged Fallback Racing
         fb_call_timeout = min(fb_timeout_ms_max, remaining_ms)
@@ -1383,82 +1454,28 @@ async def solve_question(
         if groq_key and not succ_arb and (hard_budget_ms - ((time.perf_counter() - t0) * 1000.0)) >= 300.0:
             cand_a_str = f"Option {norm_a.canonical_key}: {norm_a.selected_text}" if (norm_a and norm_a.canonical_key) else None
             cand_b_str = f"Option {norm_b.canonical_key}: {norm_b.selected_text}" if (norm_b and norm_b.canonical_key) else None
-            arb_messages = build_arbiter_messages(
+            rem_arb_timeout = min(1100.0, max(300.0, hard_budget_ms - ((time.perf_counter() - t0) * 1000.0)))
+            arb_sol, arb_models, arb_details = await run_groq_arbiter_fallback(
+                client=client,
                 subject=subject,
                 q_type=q_type,
                 question=question,
                 options=options,
                 candidate_a=cand_a_str,
                 candidate_b=cand_b_str,
-            )
-            rem_arb_timeout = min(1100.0, max(300.0, hard_budget_ms - ((time.perf_counter() - t0) * 1000.0)))
-            models_called.append(f"groq_arbiter:{arbiter_model}")
-            (raw_arb, parsed_arb, norm_arb, el_arb, err_arb) = await call_model_with_budget_retry(
-                client=client,
-                provider="groq",
-                model=arbiter_model,
-                messages=arb_messages,
-                api_key=groq_key,
+                arbiter_model=arbiter_model,
                 timeout_ms=rem_arb_timeout,
-                q_type=q_type,
-                options=options,
-                max_tokens=600,
+                groq_key=groq_key,
             )
-            succ_arb = bool(not err_arb and norm_arb and parsed_arb)
-            agreement_details["groq_arbiter"] = {
-                "model": arbiter_model,
-                "success": succ_arb,
-                "error": err_arb,
-                "canonical_key": norm_arb.canonical_key if norm_arb else None,
-                "reason": parsed_arb.reason if parsed_arb else None,
-                "latency_ms": el_arb,
-            }
-
-            if succ_arb and norm_arb:
+            models_called.extend(arb_models)
+            agreement_details["groq_arbiter"] = arb_details
+            if arb_sol is not None:
+                succ_arb = True
                 total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
-                if succ_a and norm_a and (norm_arb.canonical_key == norm_a.canonical_key):
-                    reason = parsed_arb.reason or (parsed_a.reason if parsed_a else "")
-                    return SolverResponse(
-                        status="OK",
-                        confidence_tier="MEDIUM_TIEBREAKER_AGREE",
-                        canonical_key=norm_a.canonical_key,
-                        selected_index=norm_a.selected_index,
-                        selected_text=norm_a.selected_text,
-                        permutation_indices=norm_a.permutation_indices,
-                        ordered_texts=norm_a.ordered_texts,
-                        reason=reason,
-                        latency_ms=total_elapsed_ms,
-                        models_called=models_called,
-                        agreement_details=agreement_details,
-                    )
-                if succ_b and norm_b and (norm_arb.canonical_key == norm_b.canonical_key):
-                    reason = parsed_arb.reason or (parsed_b.reason if parsed_b else "")
-                    return SolverResponse(
-                        status="OK",
-                        confidence_tier="MEDIUM_TIEBREAKER_AGREE",
-                        canonical_key=norm_b.canonical_key,
-                        selected_index=norm_b.selected_index,
-                        selected_text=norm_b.selected_text,
-                        permutation_indices=norm_b.permutation_indices,
-                        ordered_texts=norm_b.ordered_texts,
-                        reason=reason,
-                        latency_ms=total_elapsed_ms,
-                        models_called=models_called,
-                        agreement_details=agreement_details,
-                    )
-                return SolverResponse(
-                    status="OK",
-                    confidence_tier="MEDIUM_TIEBREAKER_AGREE",
-                    canonical_key=norm_arb.canonical_key,
-                    selected_index=norm_arb.selected_index,
-                    selected_text=norm_arb.selected_text,
-                    permutation_indices=norm_arb.permutation_indices,
-                    ordered_texts=norm_arb.ordered_texts,
-                    reason=parsed_arb.reason or "Groq arbiter contrastive derivation.",
-                    latency_ms=total_elapsed_ms,
-                    models_called=models_called,
-                    agreement_details=agreement_details,
-                )
+                arb_sol.latency_ms = total_elapsed_ms
+                arb_sol.models_called = models_called
+                arb_sol.agreement_details = agreement_details
+                return arb_sol
 
         had_timeout_or_error = bool(err_a or err_b or not fb_details.get("success", False))
         penalty = hard_budget_ms if had_timeout_or_error else total_elapsed_ms

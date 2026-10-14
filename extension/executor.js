@@ -563,7 +563,18 @@
     if (!customSelector && typeof window !== "undefined" && Array.isArray(window.__QUIZZY_LAST_OPTION_ELEMENTS__) && window.__QUIZZY_LAST_OPTION_ELEMENTS__.length >= 2) {
       const allConnected = window.__QUIZZY_LAST_OPTION_ELEMENTS__.every(el => el && el.isConnected !== false);
       if (allConnected) {
-        return window.__QUIZZY_LAST_OPTION_ELEMENTS__;
+        if (Array.isArray(window.__QUIZZY_LAST_OPTIONS_TEXT__) && window.__QUIZZY_LAST_OPTIONS_TEXT__.length === window.__QUIZZY_LAST_OPTION_ELEMENTS__.length) {
+          const textMatches = window.__QUIZZY_LAST_OPTION_ELEMENTS__.every((el, i) => {
+            const currentText = cleanText(getCleanVisibleText ? getCleanVisibleText(el) : (el.innerText || el.textContent || ""));
+            const expectedText = cleanText(window.__QUIZZY_LAST_OPTIONS_TEXT__[i]);
+            return currentText === expectedText || currentText.includes(expectedText) || expectedText.includes(currentText);
+          });
+          if (textMatches) {
+            return window.__QUIZZY_LAST_OPTION_ELEMENTS__;
+          }
+        } else {
+          return window.__QUIZZY_LAST_OPTION_ELEMENTS__;
+        }
       }
     }
 
@@ -708,7 +719,7 @@
   /**
    * Dispatches realistic coordinates-aware pointer/mouse event sequence and .click().
    */
-  function dispatchRealisticClick(el) {
+  function dispatchRealisticClick(el, bubbles = true) {
     if (!el || typeof el.dispatchEvent !== "function") return false;
 
     try {
@@ -726,9 +737,9 @@
     }
 
     const mouseInit = {
-      bubbles: true,
+      bubbles: !!bubbles,
       cancelable: true,
-      composed: true,
+      composed: !!bubbles,
       view: (typeof window !== "undefined" ? window : null),
       clientX: clientX,
       clientY: clientY,
@@ -745,14 +756,14 @@
         } else if (typeof MouseEvent !== "undefined") {
           ev = new MouseEvent(type, mouseInit);
         } else {
-          ev = new Event(type, { bubbles: true, cancelable: true });
+          ev = new Event(type, { bubbles: !!bubbles, cancelable: true });
         }
         el.dispatchEvent(ev);
       } catch (_) {}
     });
 
     // Native .click() or click event dispatch
-    if (typeof el.click === "function") {
+    if (bubbles && typeof el.click === "function") {
       try {
         el.click();
       } catch (_) {}
@@ -760,7 +771,7 @@
       try {
         const clickEv = (typeof MouseEvent !== "undefined")
           ? new MouseEvent("click", mouseInit)
-          : new Event("click", { bubbles: true, cancelable: true });
+          : new Event("click", { bubbles: !!bubbles, cancelable: true });
         el.dispatchEvent(clickEv);
       } catch (_) {}
     }
@@ -769,8 +780,8 @@
     if (el.tagName === "INPUT") {
       try {
         if (!el.checked) el.checked = true;
-        el.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        el.dispatchEvent(new Event("input", { bubbles: !!bubbles, cancelable: true }));
+        el.dispatchEvent(new Event("change", { bubbles: !!bubbles, cancelable: true }));
       } catch (_) {}
     }
 
@@ -837,76 +848,116 @@
   function triggerOptionSelect(targetEl) {
     if (!targetEl) return false;
 
-    const { rowEl, candidates } = resolveOptionRowAndTargets(targetEl);
-    const activeRow = rowEl || targetEl;
-
-    if (typeof window !== "undefined") {
-      window.__QUIZZY_LAST_SELECTED_OPTION__ = activeRow;
+    // 1. Locate rowEl (walking up at most 3 levels from targetEl to find option row whose parent holds 2-6 sibling options, or targetEl itself)
+    let rowEl = targetEl;
+    let curr = targetEl;
+    for (let depth = 0; depth < 3; depth++) {
+      if (!curr || !curr.parentElement) break;
+      const parent = curr.parentElement;
+      const siblings = Array.from(parent.children || []).filter(isVisible);
+      if (siblings.length >= 2 && siblings.length <= 6) {
+        rowEl = curr;
+        break;
+      }
+      curr = parent;
     }
 
-    const before = captureOptionSnapshot(activeRow);
+    if (typeof window !== "undefined") {
+      window.__QUIZZY_LAST_SELECTED_OPTION__ = rowEl;
+    }
 
-    // If input already checked or aria-checked is true, no need to re-click
-    if (before && (before.inputsChecked || before.aria === "true")) {
+    const doc = (typeof document !== "undefined") ? document : (rowEl.ownerDocument || null);
+
+    // 2. Case 1: Standard or Sibling <input type="radio" | "checkbox"> / <label> exists inside rowEl (or linked via label[for])
+    let inputEl = null;
+    if (rowEl.tagName === "INPUT" && ["radio", "checkbox"].includes((rowEl.type || "").toLowerCase())) {
+      inputEl = rowEl;
+    } else if (rowEl.querySelector) {
+      inputEl = rowEl.querySelector("input[type='radio'], input[type='checkbox']");
+    }
+
+    let labelEl = null;
+    if (rowEl.tagName === "LABEL") {
+      labelEl = rowEl;
+    } else if (rowEl.closest && rowEl.closest("label")) {
+      labelEl = rowEl.closest("label");
+    } else if (rowEl.querySelector) {
+      labelEl = rowEl.querySelector("label");
+    }
+
+    if (!inputEl && labelEl && labelEl.getAttribute && labelEl.getAttribute("for") && doc && doc.getElementById) {
+      inputEl = doc.getElementById(labelEl.getAttribute("for"));
+    }
+    if (!labelEl && inputEl && inputEl.id && doc && doc.querySelector) {
+      labelEl = doc.querySelector(`label[for="${inputEl.id}"]`);
+    }
+
+    if (inputEl || labelEl) {
+      if (labelEl) {
+        dispatchRealisticClick(labelEl, true);
+      }
+      if (inputEl && !inputEl.checked) {
+        dispatchRealisticClick(inputEl, true);
+      }
+      if (inputEl && !inputEl.checked) {
+        const radio = inputEl;
+        try {
+          const proto = (typeof window !== "undefined" && window.HTMLInputElement)
+            ? window.HTMLInputElement.prototype
+            : null;
+          const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "checked") : null;
+          if (descriptor && descriptor.set) {
+            descriptor.set.call(radio, true);
+          } else {
+            radio.checked = true;
+          }
+          if (radio._valueTracker && typeof radio._valueTracker.setValue === "function") {
+            try {
+              radio._valueTracker.setValue(false);
+            } catch (_) {}
+          }
+          radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+          radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        } catch (_) {}
+      }
       return true;
     }
 
-    let rowReceivedClick = false;
-    const rowClickListener = () => {
-      rowReceivedClick = true;
-    };
-    if (activeRow && typeof activeRow.addEventListener === "function") {
-      activeRow.addEventListener("click", rowClickListener);
+    // 3. Case 2: Classless / Custom React Option Row (No <input> inside rowEl)
+    const beforeSnapshot = captureOptionSnapshot(rowEl);
+
+    // If already visually checked or aria-checked is true, no need to re-click
+    if (beforeSnapshot && (beforeSnapshot.inputsChecked || beforeSnapshot.aria === "true")) {
+      return true;
     }
 
-    try {
-      // Try candidates in priority order; STOP IMMEDIATELY once selection state changes or row receives click!
-      for (const cand of candidates) {
-        dispatchRealisticClick(cand);
-        if (before && didOptionSelectionChange(activeRow, before)) {
-          return true; // Selected! Stop immediately to prevent toggling off!
-        }
-        if (rowReceivedClick) {
-          // If the full option row container already received the click event via direct click or bubbling,
-          // stop further candidate escalation to prevent duplicate toggling.
-          break;
-        }
+    // Step A: Primary Click on rowEl FIRST with bubbles: true
+    dispatchRealisticClick(rowEl, true);
+
+    // If selection changed on rowEl, return immediately
+    if (didOptionSelectionChange(rowEl, beforeSnapshot)) {
+      return true;
+    }
+
+    // Step B: If rowEl did NOT change visual state, fire direct non-bubbling clicks
+    // on rowEl.firstElementChild (circle) and rowEl.lastElementChild (label) (and targetEl if different from rowEl)
+    const childCandidates = [];
+    if (rowEl.firstElementChild && rowEl.firstElementChild !== rowEl) {
+      childCandidates.push(rowEl.firstElementChild);
+    }
+    const lastChild = rowEl.lastElementChild;
+    if (lastChild && lastChild !== rowEl && !childCandidates.includes(lastChild)) {
+      childCandidates.push(lastChild);
+    }
+    if (targetEl && targetEl !== rowEl && !childCandidates.includes(targetEl)) {
+      childCandidates.push(targetEl);
+    }
+
+    for (const child of childCandidates) {
+      dispatchRealisticClick(child, false);
+      if (didOptionSelectionChange(rowEl, beforeSnapshot)) {
+        return true;
       }
-    } finally {
-      if (activeRow) {
-        if (typeof activeRow.removeEventListener === "function") {
-          try {
-            activeRow.removeEventListener("click", rowClickListener);
-          } catch (_) {}
-        } else if (activeRow.listeners && Array.isArray(activeRow.listeners["click"])) {
-          const idx = activeRow.listeners["click"].indexOf(rowClickListener);
-          if (idx !== -1) activeRow.listeners["click"].splice(idx, 1);
-        }
-      }
-    }
-
-    // Also support classic React property descriptor for hidden radio inputs
-    const radio = activeRow.querySelector ? activeRow.querySelector("input[type='radio']") : null;
-    if (radio && !radio.checked) {
-      try {
-        const proto = (typeof window !== "undefined" && window.HTMLInputElement)
-          ? window.HTMLInputElement.prototype
-          : null;
-        const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "checked") : null;
-        if (descriptor && descriptor.set) {
-          descriptor.set.call(radio, true);
-        } else {
-          radio.checked = true;
-        }
-        radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-        radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-        radio.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      } catch (_) {}
-    }
-
-    // Fallback: if no candidates or state change detected via snapshots, ensure activeRow was clicked
-    if (candidates.length === 0) {
-      dispatchRealisticClick(activeRow);
     }
 
     return true;
@@ -977,6 +1028,14 @@
         if (ciIdx !== -1) {
           targetIndex = ciIdx;
         }
+      }
+    }
+
+    // 2.5 Single letter fallback if cleanTargetText is "A"–"F" and targetIndex unresolved
+    if ((targetIndex === null || targetIndex === undefined) && cleanTargetText && /^[A-F]$/i.test(cleanTargetText.trim())) {
+      const allMultiChar = optionCleanTexts.every(t => !t || t.trim().length > 1);
+      if (allMultiChar) {
+        targetIndex = cleanTargetText.trim().toUpperCase().charCodeAt(0) - 65;
       }
     }
 

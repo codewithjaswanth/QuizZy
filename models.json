@@ -13,6 +13,13 @@
     "tier": "S",
     "priority": 2
   },
+  "arbiter": {
+    "provider": "groq",
+    "family": "llama",
+    "model": "llama-3.3-70b-versatile",
+    "tier": "S",
+    "priority": 1
+  },
   "fallback": {
     "provider": "openrouter",
     "family": "nemotron",
@@ -66,7 +73,7 @@
     }
   ],
   "timeouts_ms": {
-    "groq_parallel_timeout_ms": 1750,
+    "groq_parallel_timeout_ms": 2200,
     "openrouter_fallback_timeout_ms": 2150,
     "searxng_timeout_ms": 650,
     "searxng_grounded_llm_timeout_ms": 900,

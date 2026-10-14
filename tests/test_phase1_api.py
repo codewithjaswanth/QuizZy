@@ -222,6 +222,7 @@ def test_live_api_solve():
         r3, res3 = post_solve_with_retry(client, text_payload)
         assert r3.status_code == 200
         assert res3["status"] == "ok"
+        assert res3["confidence_label"] in ("high", "medium")
         assert "au" in res3["answer"].lower() or "gold" in res3["answer"].lower()
         print(f"  -> Live Free-Text Call: '{res3['answer']}' in {res3['latency_ms']}ms [OK]")
 
@@ -236,6 +237,7 @@ def test_live_api_solve():
         r4, res4 = post_solve_with_retry(client, order_payload)
         assert r4.status_code == 200
         assert res4["status"] == "ok"
+        assert res4["confidence_label"] in ("high", "medium")
         assert res4["answer"] == "B,C,D,A"
         assert res4["permutation_indices"] == [1, 2, 3, 0]
         print(f"  -> Live Order Call: '{res4['answer']}' in {res4['latency_ms']}ms [OK]")

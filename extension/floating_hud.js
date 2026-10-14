@@ -999,49 +999,69 @@
     });
   }
 
+  function buildExecuteActionPayload(solveData, extracted) {
+    if (!solveData) return null;
+    const qType = (extracted && extracted.q_type) || (solveData.q_type || "mcq").toLowerCase();
+    const options = (extracted && Array.isArray(extracted.options)) ? extracted.options : [];
+
+    // Resolve targetIndex (0-based integer)
+    let targetIndex = null;
+    if (typeof solveData.selected_index === "number" && solveData.selected_index >= 0 && (options.length === 0 || solveData.selected_index < options.length)) {
+      targetIndex = solveData.selected_index;
+    } else if (typeof solveData.canonical_key === "string" && /^[A-F]$/i.test(solveData.canonical_key.trim())) {
+      targetIndex = solveData.canonical_key.trim().toUpperCase().charCodeAt(0) - 65;
+    } else if (typeof solveData.answer === "string" && /^[A-F]$/i.test(solveData.answer.trim())) {
+      targetIndex = solveData.answer.trim().toUpperCase().charCodeAt(0) - 65;
+    } else if (typeof solveData.letter === "string" && /^[A-F]$/i.test(solveData.letter.trim())) {
+      targetIndex = solveData.letter.trim().toUpperCase().charCodeAt(0) - 65;
+    } else if (options.length > 0) {
+      const matchText = solveData.selected_text || solveData.selected_option || solveData.answer;
+      if (matchText) {
+        const cleanMatch = String(matchText).trim().toLowerCase();
+        const foundIdx = options.findIndex(opt => opt && String(opt).trim().toLowerCase() === cleanMatch);
+        if (foundIdx !== -1) {
+          targetIndex = foundIdx;
+        }
+      }
+    }
+
+    // Resolve targetText
+    let targetText = "";
+    if (targetIndex !== null && targetIndex >= 0 && targetIndex < options.length) {
+      targetText = options[targetIndex];
+    } else {
+      targetText = solveData.selected_text || solveData.selected_option || solveData.answer || "";
+    }
+
+    const letter = (targetIndex !== null && targetIndex >= 0) ? String.fromCharCode(65 + targetIndex) : "";
+
+    return {
+      question_type: qType,
+      q_type: qType,
+      targetIndex,
+      selected_index: targetIndex,
+      targetText,
+      selected_text: targetText,
+      answer: (qType === "mcq" && targetText) ? targetText : solveData.answer,
+      letter,
+      ordered_indices: solveData.ordered_indices,
+      ordered_texts: solveData.ordered_texts,
+      target_permutation: solveData.ordered_indices,
+      permutation_indices: solveData.permutation_indices
+    };
+  }
+
   function applyCurrentSolution(callback) {
     if (!latestSolution || latestSolution.status !== "ok") {
       if (callback) callback({ success: false, reason: "No valid solution to apply" });
       return;
     }
 
-    const qType = (latestSolution.q_type || "mcq").toLowerCase();
-    let targetIdx = (typeof latestSolution.selected_index === "number" && latestSolution.selected_index >= 0)
-      ? latestSolution.selected_index
-      : null;
-
-    let syntheticLetter = "";
-    if (typeof latestSolution.letter === "string" && /^[A-F]$/i.test(latestSolution.letter.trim())) {
-      syntheticLetter = latestSolution.letter.trim().toUpperCase();
-    } else if (typeof latestSolution.canonical_key === "string" && /^[A-F]$/i.test(latestSolution.canonical_key.trim())) {
-      syntheticLetter = latestSolution.canonical_key.trim().toUpperCase();
-    } else if (typeof latestSolution.answer === "string" && /^[A-F]$/i.test(latestSolution.answer.trim())) {
-      syntheticLetter = latestSolution.answer.trim().toUpperCase();
+    const actionPayload = buildExecuteActionPayload(latestSolution, latestExtracted);
+    if (!actionPayload) {
+      if (callback) callback({ success: false, reason: "Could not build action payload" });
+      return;
     }
-
-    if (targetIdx === null && syntheticLetter) {
-      targetIdx = syntheticLetter.charCodeAt(0) - 65;
-    }
-
-    const resolvedLetter = syntheticLetter || (targetIdx !== null ? String.fromCharCode(65 + targetIdx) : "");
-    const resolvedText = latestSolution.selected_text ||
-      (latestExtracted && Array.isArray(latestExtracted.options) && targetIdx !== null ? latestExtracted.options[targetIdx] : "") ||
-      (latestSolution.answer && !/^[A-F]$/i.test(String(latestSolution.answer).trim()) ? latestSolution.answer : "");
-
-    const actionPayload = {
-      question_type: qType,
-      q_type: qType,
-      targetIndex: targetIdx,
-      selected_index: targetIdx,
-      targetText: resolvedText,
-      selected_text: resolvedText,
-      answer: (qType === "mcq" && resolvedText) ? resolvedText : latestSolution.answer,
-      letter: resolvedLetter,
-      ordered_indices: latestSolution.ordered_indices,
-      ordered_texts: latestSolution.ordered_texts,
-      target_permutation: latestSolution.ordered_indices,
-      permutation_indices: latestSolution.permutation_indices
-    };
 
     const exec = window.__QuizZyExecutor || window.QuizZyExecutor;
     if (exec && (typeof exec.executeQuizAction === "function" || typeof exec.executeAction === "function")) {
@@ -1210,7 +1230,7 @@
               }
             }, 400);
           });
-        }, 500);
+        }, 220);
       });
     });
   }
