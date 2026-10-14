@@ -840,13 +840,13 @@ async function main() {
   }
 
   // Test 11: Exact learning.ccbp.in Classless styled-components DOM Reproduction Test
-  // Zero semantic classes, zero <input type="radio">, only sc-... hashed classes!
-  let opt0Clicked = false;
+  // 4 direct child <div>s, NO <hr> tag, zero semantic classes, zero <input type="radio">!
+  let opt0ClickCount = 0;
   const opt0Row = el("div", "sc-opt-row sc-bczRLJ", {}, [
     el("div", "sc-circle sc-kLLOBW", {}),
-    el("div", "sc-opt-text sc-iBPRYJ", {}, ["B increases chance of A"])
+    el("div", "sc-opt-label sc-iBPRYJ", {}, ["B increases chance of A"])
   ]);
-  opt0Row.addEventListener("click", () => { opt0Clicked = true; });
+  opt0Row.addEventListener("click", () => { opt0ClickCount++; });
 
   const ccbpDoc = el("html", "", {}, [
     el("head"),
@@ -860,37 +860,41 @@ async function main() {
         el("span", "sc-end", {}, ["END PRACTICE"]),
         el("span", "sc-id", {}, ["ID: N25G01A0095"])
       ]),
-      // White Question Card
+      // White Question Card (4 direct child <div>s, NO <hr> tag!)
       el("div", "sc-card-hash sc-fjdhpX", {}, [
-        el("div", "sc-q-hash sc-gKclnd", {}, [
-          "A rare event A has P(A) = 0.01. Event B is common, P(B) = 0.9. If P(A | B) = 0.015, which statement is likely true?"
+        // Child 1: Question section
+        el("div", "sc-q-section sc-gKclnd", {}, [
+          el("div", "sc-q-text", {}, [
+            el("span", "", {}, ["A rare event A has P(A) = 0.01."]),
+            " ",
+            el("span", "", {}, ["Event B is common, P(B) = 0.9. If P(A | B) = 0.015, which statement is likely true?"])
+          ])
         ]),
-        el("hr", "sc-hr-hash sc-crXryy"),
-        // 4 classless option rows without radio inputs
-        el("div", "sc-opts-hash sc-dIouRR", {}, [
+        // Child 2: Options section
+        el("div", "sc-opts-section sc-dIouRR", {}, [
           opt0Row,
           el("div", "sc-opt-row sc-bczRLJ", {}, [
             el("div", "sc-circle sc-kLLOBW", {}),
-            el("div", "sc-opt-text sc-iBPRYJ", {}, ["Independent"])
+            el("div", "sc-opt-label sc-iBPRYJ", {}, ["Independent"])
           ]),
           el("div", "sc-opt-row sc-bczRLJ", {}, [
             el("div", "sc-circle sc-kLLOBW", {}),
-            el("div", "sc-opt-text sc-iBPRYJ", {}, ["Mutually exclusive"])
+            el("div", "sc-opt-label sc-iBPRYJ", {}, ["Mutually exclusive"])
           ]),
           el("div", "sc-opt-row sc-bczRLJ", {}, [
             el("div", "sc-circle sc-kLLOBW", {}),
-            el("div", "sc-opt-text sc-iBPRYJ", {}, ["B decreases chance"])
+            el("div", "sc-opt-label sc-iBPRYJ", {}, ["B decreases chance"])
           ])
         ]),
-        // Action buttons inside card
-        el("div", "sc-btns sc-hKMtqu", {}, [
+        // Child 3: Action buttons section
+        el("div", "sc-actions-section sc-hKMtqu", {}, [
           el("button", "sc-btn1 sc-eCYdqJ", { type: "button" }, ["SHOW ANSWER"]),
           el("button", "sc-btn2 sc-jSMfEi", { type: "button" }, ["SUBMIT"])
         ]),
-        // Skip section
-        el("div", "sc-skip sc-gKXOVf", {}, [
+        // Child 4: Skip footer section
+        el("div", "sc-skip-section sc-gKXOVf", {}, [
           el("button", "sc-btn3 sc-iwsKbI", { type: "button" }, ["SKIP"]),
-          el("p", "sc-note sc-ftv Sup", {}, ["If you skip, you can attempt this question again after finishing all questions"])
+          el("p", "sc-skip-text sc-ftvSup", {}, ["If you skip, you can attempt this question again after finishing all questions"])
         ])
       ])
     ])
@@ -942,8 +946,8 @@ async function main() {
   if (!clickResult || !clickResult.success) {
     throw new Error(`executeMcqAction on classless options failed: ${JSON.stringify(clickResult)}`);
   }
-  if (!opt0Clicked) {
-    throw new Error("First option <div class='sc-opt-row'> did not receive click event!");
+  if (opt0ClickCount !== 1) {
+    throw new Error(`Expected first option to be clicked exactly once, but was clicked ${opt0ClickCount} times!`);
   }
 
   console.log("NODE_RUNTIME_TESTS_OK");

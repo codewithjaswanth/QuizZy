@@ -749,29 +749,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const forcedQType = selectQType ? selectQType.value : "auto";
     const selectors = getCustomSelectors();
 
-    chrome.runtime.sendMessage({
-      action: "EXTRACT_QUIZ",
-      customSelectors: selectors,
-      forcedQType: forcedQType
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        showAlert(`Extraction failed: ${chrome.runtime.lastError.message}`);
-        if (callback) callback(null);
-        return;
-      }
-
-      if (!response || !response.success) {
-        showAlert(response && response.error ? response.error : "Failed to extract quiz data from active tab.");
-        if (response && response.partial) {
-          if (response.partial.subject && inputSubject && response.partial.subject !== "General") {
-            inputSubject.value = response.partial.subject;
-          }
-          renderPreview(response.partial);
-        }
-        if (callback) callback(null);
-        return;
-      }
-
+    function handleSuccess(response) {
       extractedState = response;
       renderPreview(response);
 
@@ -789,6 +767,52 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (callback) callback(response);
+    }
+
+    function handleFailure(response) {
+      showAlert(response && response.error ? response.error : "Failed to extract quiz data from active tab.");
+      if (response && response.partial) {
+        if (response.partial.subject && inputSubject && response.partial.subject !== "General") {
+          inputSubject.value = response.partial.subject;
+        }
+        renderPreview(response.partial);
+      }
+      if (callback) callback(null);
+    }
+
+    chrome.runtime.sendMessage({
+      action: "EXTRACT_QUIZ",
+      customSelectors: selectors,
+      forcedQType: forcedQType
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        showAlert(`Extraction failed: ${chrome.runtime.lastError.message}`);
+        if (callback) callback(null);
+        return;
+      }
+
+      if (!response || !response.success) {
+        // Fallback: If custom selectors were provided but failed to match on this page, retry once with built-in discovery
+        const hasCustom = selectors && (selectors.questionSelector || selectors.optionsSelector || selectors.textInputSelector);
+        if (hasCustom) {
+          chrome.runtime.sendMessage({
+            action: "EXTRACT_QUIZ",
+            customSelectors: {},
+            forcedQType: forcedQType
+          }, (retryResponse) => {
+            if (retryResponse && retryResponse.success) {
+              handleSuccess(retryResponse);
+              return;
+            }
+            handleFailure(response);
+          });
+          return;
+        }
+        handleFailure(response);
+        return;
+      }
+
+      handleSuccess(response);
     });
   }
 

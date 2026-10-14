@@ -241,35 +241,68 @@
   }
 
   /**
-   * Blacklist for header and navigation elements.
+   * Identifies non-question header, navigation, button, or explanation strings to prevent false positives.
    */
   function isHeaderOrNavText(text) {
     if (!text) return true;
-    const lower = text.toLowerCase();
-    const blacklist = [
-      /mcq\s*practice/i,
-      /practice\s*instructions/i,
-      /end\s*practice/i,
-      /practice\s*summary/i,
-      /questions?\s*attempted/i,
-      /score\s*:/i,
-      /time\s*left/i,
-      /remaining\s*time/i,
-      /show\s*answer/i,
-      /submit/i,
-      /skip/i,
-      /next\s*question/i,
-      /id\s*:/i,
-      /if\s*you\s*skip/i,
-      /view\s*report/i,
-      /all\s*rights\s*reserved/i
-    ];
-    return blacklist.some((rx) => rx.test(lower));
+    const t = text.trim();
+
+    // Standalone action buttons
+    if (/^(?:show\s*answer|hide\s*answer|submit|submit\s*answer|skip|next|next\s*question|previous|back|continue|report(?:\s*an)?\s*issue|check|finish|view\s*report)$/i.test(t)) {
+      return true;
+    }
+
+    // Top-bar navigation, controls, scores, instructions, CCBP student ID & disclaimers
+    if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|id\s*:\s*[A-Za-z0-9]+)/i.test(t)) {
+      return true;
+    }
+
+    if (/^if\s+you\s+skip,\s+you\s+can\s+attempt\s+this\s+question\s+again/i.test(t)) {
+      return true;
+    }
+
+    // Post-submit explanation or feedback title headers
+    if (t.length <= 40 && /^(?:explanation|solution|correct\s*answer|your\s*answer|detailed\s*solution|answer\s*key|hint|review(?:\s*questions)?)$/i.test(t)) {
+      return true;
+    }
+
+    // Numbering artifacts like "Question 1 of 15" or "Q1."
+    if (/^(?:question\s*\d+\s*(?:of|\/)\s*\d+|q\s*\d+[\.\:\s]*)$/i.test(t)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Helper that checks if an element or any of its descendants is or contains an action button
+   * (e.g. SUBMIT, SHOW ANSWER, SKIP) or a quiz footer/disclaimer (e.g. "If you skip...").
+   */
+  function containsActionButtonOrFooter(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const actionPattern = /^(?:SHOW ANSWER|HIDE ANSWER|SUBMIT|SUBMIT ANSWER|SKIP|NEXT|NEXT QUESTION|PREVIOUS|END PRACTICE|PRACTICE INSTRUCTIONS|HINT|REPORT|CHECK|FINISH|VIEW REPORT)$/;
+    const footerKeywords = /(?:IF YOU SKIP, YOU CAN ATTEMPT|QUESTIONS ATTEMPTED|END PRACTICE|PRACTICE INSTRUCTIONS)/;
+
+    const elText = cleanText(el.textContent || el.innerText || "").toUpperCase();
+    if (actionPattern.test(elText) || footerKeywords.test(elText)) {
+      return true;
+    }
+
+    const descendants = el.querySelectorAll ? Array.from(el.querySelectorAll("button, [role='button'], a, div, span, p")) : [];
+    for (const d of descendants) {
+      const dText = cleanText(d.textContent || d.innerText || "").toUpperCase();
+      if (actionPattern.test(dText) || footerKeywords.test(dText)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
    * Finds the Quiz Card container.
-   * Supports semantic card classes, button-anchored cards (for classless styled-components), and generic main/form/card elements.
+   * Walks up from action button all the way until just BEFORE the top page navbar or document body,
+   * verifying it contains substantial content above the buttons.
    */
   function findQuizCard(doc) {
     if (!doc) return null;
@@ -303,24 +336,30 @@
 
     if (actionBtn) {
       let curr = actionBtn.parentElement;
-      let candidateCard = null;
+      let bestCard = null;
+
       while (curr && curr !== doc.body && curr !== doc.documentElement) {
         const currText = curr.textContent || "";
-        // Stop before the top navbar that encloses the whole page
-        if (/mcq\s*practice|end\s*practice|questions?\s*attempted/i.test(currText)) {
+        const hasTopNavMarkers = /mcq\s*practice|end\s*practice|questions?\s*attempted|practice\s*instructions/i.test(currText);
+        if (hasTopNavMarkers) {
+          // Reached or surpassed page wrapper enclosing the navbar; stop here!
           break;
         }
 
-        // Substantial container enclosing content above buttons
-        if (curr.children && curr.children.length >= 2) {
-          candidateCard = curr;
+        // Check if curr has substantial content above/outside the action buttons & skip footer
+        const nonActionText = currText
+          .replace(/show\s*answer|hide\s*answer|submit(?:\s*answer)?|skip|next(?:\s*question)?|previous|end\s*practice|practice\s*instructions|if\s*you\s*skip[^\n]*/gi, "")
+          .trim();
+
+        if (nonActionText.length >= 15) {
+          bestCard = curr;
         }
 
         curr = curr.parentElement;
       }
 
-      if (candidateCard) {
-        return candidateCard;
+      if (bestCard) {
+        return bestCard;
       }
     }
 
@@ -335,49 +374,66 @@
 
   /**
    * Classless Option Group Discovery (for styled-components / sc-... without radio inputs or semantic classes).
+   * Disqualifies layout section wrappers and ensures options container is preceded by question stem text.
    */
   function findClasslessOptionElements(scopeRoot, docRef) {
     const scope = scopeRoot || docRef || (typeof document !== "undefined" ? document : null);
     if (!scope) return [];
 
-    const actionButtons = Array.from(scope.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")).filter(isVisible);
-    let actionBoundary = null;
-    for (const btn of actionButtons) {
-      const txt = cleanText(btn.textContent || btn.value || "");
-      if (/^(?:submit|show\s*answer|next\s*question|next|check|skip|end\s*practice)$/i.test(txt)) {
-        actionBoundary = btn;
-        break;
-      }
-    }
+    const candidateContainers = Array.from(scope.querySelectorAll("div, ul, ol, section, form")).filter(isVisible);
+    const allDescendants = Array.from(scope.querySelectorAll("*"));
 
-    const candidateContainers = Array.from(scope.querySelectorAll("div, ul, ol")).filter(isVisible);
+    // Bottom-Up / Innermost scan: iterate backwards to favor innermost option group
     for (let i = candidateContainers.length - 1; i >= 0; i--) {
       const container = candidateContainers[i];
       if (container === scope) continue;
-      if (actionBoundary && container.contains && container.contains(actionBoundary)) continue;
 
-      const children = Array.from(container.children || []).filter(isVisible);
-      if (children.length < 2 || children.length > 6) continue;
+      const rawChildren = Array.from(container.children || []).filter(isVisible);
+      const validChildren = rawChildren.filter(c => {
+        const tag = (c.tagName || "").toLowerCase();
+        return ["div", "li", "button", "label", "a", "span"].includes(tag) && !["hr", "br", "script", "style"].includes(tag);
+      });
 
-      const firstTag = (children[0].tagName || "").toLowerCase();
-      if (!["div", "li", "button", "label", "span"].includes(firstTag)) continue;
-      const allSameTag = children.every(c => (c.tagName || "").toLowerCase() === firstTag);
+      if (validChildren.length < 2 || validChildren.length > 6) continue;
+
+      // Disqualify immediately if ANY candidate child is or contains an action button or footer
+      const hasActionChild = validChildren.some(c => containsActionButtonOrFooter(c));
+      if (hasActionChild) continue;
+
+      // All children should share the same tag name
+      const firstTag = (validChildren[0].tagName || "").toLowerCase();
+      const allSameTag = validChildren.every(c => (c.tagName || "").toLowerCase() === firstTag);
       if (!allSameTag) continue;
 
-      const hasActionBtn = children.some(c => {
-        const txt = cleanText(c.textContent || "");
-        return /^(?:show\s*answer|submit|skip|next\s*question|next|end\s*practice|practice\s*instructions)$/i.test(txt);
-      });
-      if (hasActionBtn) continue;
-
-      const texts = children.map(c => getCleanVisibleText(c));
+      // Check each child has clean visible text between 1 and 300 characters
+      const texts = validChildren.map(c => getCleanVisibleText(c));
       const validTexts = texts.every(t => t.length >= 1 && t.length <= 300 && !isHeaderOrNavText(t));
       if (!validTexts) continue;
 
       const uniqueTexts = new Set(texts);
       if (uniqueTexts.size < 2) continue;
 
-      return children;
+      // Disqualify immediately if there is NO non-blacklisted question text inside scope preceding this container
+      const containerIdx = allDescendants.indexOf(container);
+      if (containerIdx > 0) {
+        let hasPrecedingText = false;
+        for (let j = 0; j < containerIdx; j++) {
+          const prev = allDescendants[j];
+          if (container.contains && container.contains(prev)) continue;
+          if (containsActionButtonOrFooter(prev)) continue;
+          if (isExplanationOrFeedback(prev)) continue;
+          const prevTxt = getCleanVisibleText(prev);
+          if (prevTxt.length >= 8 && !isHeaderOrNavText(prevTxt)) {
+            hasPrecedingText = true;
+            break;
+          }
+        }
+        if (!hasPrecedingText) continue;
+      } else {
+        continue;
+      }
+
+      return validChildren;
     }
 
     return [];
@@ -415,8 +471,8 @@
       el.focus();
     } catch (e) {}
 
-    // Dispatch pointer and mouse events in realistic sequence
-    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+    // Dispatch pointer and mouse down/up in sequence
+    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup"];
     eventTypes.forEach((type) => {
       try {
         let ev;
@@ -441,10 +497,17 @@
       } catch (e) {}
     });
 
-    // Native click fallback
+    // Native .click() or click event fallback
     if (typeof el.click === "function") {
       try {
         el.click();
+      } catch (e) {}
+    } else {
+      try {
+        const clickEv = (typeof MouseEvent !== "undefined")
+          ? new MouseEvent("click", { bubbles: true, cancelable: true, view: window })
+          : new Event("click", { bubbles: true, cancelable: true });
+        el.dispatchEvent(clickEv);
       } catch (e) {}
     }
     return true;
@@ -472,7 +535,7 @@
       const customMatches = Array.from(doc.querySelectorAll(customSelector))
         .filter(isVisible)
         .filter((el) => !isExplanationOrFeedback(el) && !isHeaderOrNavText(cleanText(el.innerText || el.textContent || "")));
-      if (customMatches.length > 0) return customMatches;
+      if (customMatches.length >= 2) return customMatches;
     }
 
     // Check for radio button groups (supporting CSS-hidden radio inputs with visible labels)
@@ -587,22 +650,19 @@
       ? (targetEl.querySelector("input[type='radio']") || (targetEl.tagName === "INPUT" && targetEl.type === "radio" ? targetEl : null))
       : null;
 
-    // 1. Dispatch realistic mouse interaction sequence on the label or interactive card FIRST
-    // CRITICAL: Do NOT pre-mutate radio.checked = true before click, which breaks React 16-18 _valueTracker!
+    // 1. Single-target click dispatch: NEVER click both targetEl and an inner child
+    // If targetEl contains an <input type="radio" | "checkbox">, <label>, or <button>, click that interactive child (which bubbles up).
+    // If targetEl is a classless <div> or <li> (no input/label/button), click targetEl directly once.
+    let interactiveChild = null;
+    if (targetEl.querySelector) {
+      interactiveChild = targetEl.querySelector("input[type='radio'], input[type='checkbox'], label, button, [role='button'], [role='radio']");
+    }
+
     const clickTarget = (targetEl.tagName === "INPUT" && targetEl.parentElement && targetEl.parentElement.tagName === "LABEL")
       ? targetEl.parentElement
-      : targetEl;
+      : (interactiveChild || targetEl);
 
     const clicked = dispatchClick(clickTarget);
-    if (radio && radio !== clickTarget) {
-      dispatchClick(radio);
-    }
-
-    // Also dispatch on inner circle indicator or text child so React synthetic onClick fires whether attached to row or inner target
-    const innerTarget = targetEl.querySelector("input, [class*='circle'], [class*='radio'], [class*='opt-text'], [class*='text'], label, span");
-    if (innerTarget && innerTarget !== clickTarget && innerTarget !== radio) {
-      dispatchClick(innerTarget);
-    }
 
     // 2. React 16-18 controlled radio fallback: only if radio is STILL not checked after click
     if (radio && !radio.checked) {
@@ -1114,6 +1174,7 @@
     getCleanVisibleText,
     stripDecorativePrefix,
     isHeaderOrNavText,
+    containsActionButtonOrFooter,
     isExplanationOrFeedback,
     isVisible,
     isRadioOrOptionVisible,

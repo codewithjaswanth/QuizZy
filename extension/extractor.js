@@ -303,21 +303,29 @@
   /**
    * Identifies non-question header, navigation, button, or explanation strings to prevent false positives.
    */
+  /**
+   * Identifies non-question header, navigation, button, or explanation strings to prevent false positives.
+   */
   function isHeaderOrNavText(text) {
     if (!text) return true;
     const t = text.trim();
 
-    // Top-bar navigation, controls, scores, instructions, CCBP student ID & disclaimers
-    if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|show\s*answer|skip|submit|next|next\s*question|previous|back|continue|report(?:\s*an)?\s*issue|id\s*:\s*|if\s*you\s*skip)/i.test(t)) {
+    // Standalone action buttons
+    if (/^(?:show\s*answer|hide\s*answer|submit|submit\s*answer|skip|next|next\s*question|previous|back|continue|report(?:\s*an)?\s*issue|check|finish|view\s*report)$/i.test(t)) {
       return true;
     }
 
-    if (/if\s+you\s+skip,\s+you\s+can\s+attempt\s+this\s+question\s+again/i.test(t)) {
+    // Top-bar navigation, controls, scores, instructions, CCBP student ID & disclaimers
+    if (/^(?:mcq\s*practice|practice\s*instructions|end\s*practice|end\s*test|submit\s*test|score\s*:\s*\d+|questions?\s*attempted\s*:\s*\d+|time\s*left|timer\s*:|id\s*:\s*[A-Za-z0-9]+)/i.test(t)) {
+      return true;
+    }
+
+    if (/^if\s+you\s+skip,\s+you\s+can\s+attempt\s+this\s+question\s+again/i.test(t)) {
       return true;
     }
 
     // Post-submit explanation or feedback title headers
-    if (t.length <= 40 && /^(?:explanation|solution|correct\s*answer|your\s*answer|detailed\s*solution|answer\s*key|hint|review(?:\s*questions)?)/i.test(t)) {
+    if (t.length <= 40 && /^(?:explanation|solution|correct\s*answer|your\s*answer|detailed\s*solution|answer\s*key|hint|review(?:\s*questions)?)$/i.test(t)) {
       return true;
     }
 
@@ -330,11 +338,36 @@
   }
 
   /**
+   * Helper that checks if an element or any of its descendants is or contains an action button
+   * (e.g. SUBMIT, SHOW ANSWER, SKIP) or a quiz footer/disclaimer (e.g. "If you skip...").
+   */
+  function containsActionButtonOrFooter(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const actionPattern = /^(?:SHOW ANSWER|HIDE ANSWER|SUBMIT|SUBMIT ANSWER|SKIP|NEXT|NEXT QUESTION|PREVIOUS|END PRACTICE|PRACTICE INSTRUCTIONS|HINT|REPORT|CHECK|FINISH|VIEW REPORT)$/;
+    const footerKeywords = /(?:IF YOU SKIP, YOU CAN ATTEMPT|QUESTIONS ATTEMPTED|END PRACTICE|PRACTICE INSTRUCTIONS)/;
+
+    const elText = cleanText(el.textContent || el.innerText || "").toUpperCase();
+    if (actionPattern.test(elText) || footerKeywords.test(elText)) {
+      return true;
+    }
+
+    const descendants = el.querySelectorAll ? Array.from(el.querySelectorAll("button, [role='button'], a, div, span, p")) : [];
+    for (const d of descendants) {
+      const dText = cleanText(d.textContent || d.innerText || "").toUpperCase();
+      if (actionPattern.test(dText) || footerKeywords.test(dText)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Checks if an element is part of a post-submit explanation or feedback container.
    * Walks up the ancestor chain and inspects container classes, IDs, headings, and sibling headings.
    */
   function isExplanationOrFeedback(el) {
-    if (!el) return false;
+    if (!el || el.nodeType !== 1) return false;
     // Interactive action buttons (SHOW ANSWER, SUBMIT, SKIP, etc.) are NOT explanation boxes
     const tag = (el.tagName || "").toLowerCase();
     if (tag === "button" || tag === "input") {
@@ -366,7 +399,7 @@
       const firstChild = curr.firstElementChild || (curr.children && curr.children[0]);
       if (firstChild) {
         const fcTag = (firstChild.tagName || "").toLowerCase();
-        if (fcTag !== "button" && /^h[1-6]$|strong|b|span|div/.test(fcTag)) {
+        if (fcTag !== "button" && /^h[1-6]$|strong|b/.test(fcTag)) {
           const fcText = cleanText(firstChild.textContent || firstChild.innerText || "");
           if (headingPattern.test(fcText) && !/show\s*answer/i.test(fcText)) {
             return true;
@@ -393,7 +426,8 @@
 
   /**
    * Finds the Quiz Card container.
-   * Supports semantic card classes, button-anchored cards (for classless styled-components), and generic main/form/card elements.
+   * Walks up from action button all the way until just BEFORE the top page navbar or document body,
+   * verifying it contains substantial content above the buttons.
    */
   function findQuizCard(doc) {
     if (!doc) return null;
@@ -427,24 +461,30 @@
 
     if (actionBtn) {
       let curr = actionBtn.parentElement;
-      let candidateCard = null;
+      let bestCard = null;
+
       while (curr && curr !== doc.body && curr !== doc.documentElement) {
         const currText = curr.textContent || "";
-        // Stop before the top navbar that encloses the whole page
-        if (/mcq\s*practice|end\s*practice|questions?\s*attempted/i.test(currText)) {
+        const hasTopNavMarkers = /mcq\s*practice|end\s*practice|questions?\s*attempted|practice\s*instructions/i.test(currText);
+        if (hasTopNavMarkers) {
+          // Reached or surpassed page wrapper enclosing the navbar; stop here!
           break;
         }
 
-        // Substantial container enclosing content above buttons
-        if (curr.children && curr.children.length >= 2) {
-          candidateCard = curr;
+        // Check if curr has substantial content above/outside the action buttons & skip footer
+        const nonActionText = currText
+          .replace(/show\s*answer|hide\s*answer|submit(?:\s*answer)?|skip|next(?:\s*question)?|previous|end\s*practice|practice\s*instructions|if\s*you\s*skip[^\n]*/gi, "")
+          .trim();
+
+        if (nonActionText.length >= 15) {
+          bestCard = curr;
         }
 
         curr = curr.parentElement;
       }
 
-      if (candidateCard) {
-        return candidateCard;
+      if (bestCard) {
+        return bestCard;
       }
     }
 
@@ -459,49 +499,64 @@
 
   /**
    * Classless Option Group Discovery (for styled-components / sc-... without radio inputs or semantic classes).
+   * Disqualifies layout section wrappers and ensures options container is preceded by question stem text.
    */
   function findClasslessOptionElements(scopeRoot, docRef) {
     const scope = scopeRoot || docRef || (typeof document !== "undefined" ? document : null);
     if (!scope) return [];
 
-    const actionButtons = Array.from(scope.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")).filter(isVisible);
-    let actionBoundary = null;
-    for (const btn of actionButtons) {
-      const txt = cleanText(btn.textContent || btn.value || "");
-      if (/^(?:submit|show\s*answer|next\s*question|next|check|skip|end\s*practice)$/i.test(txt)) {
-        actionBoundary = btn;
-        break;
-      }
-    }
-
     const candidateContainers = Array.from(scope.querySelectorAll("div, ul, ol")).filter(isVisible);
+    const allDescendants = Array.from(scope.querySelectorAll("*"));
+
     for (let i = candidateContainers.length - 1; i >= 0; i--) {
       const container = candidateContainers[i];
       if (container === scope) continue;
-      if (actionBoundary && container.contains && container.contains(actionBoundary)) continue;
 
-      const children = Array.from(container.children || []).filter(isVisible);
-      if (children.length < 2 || children.length > 6) continue;
+      const rawChildren = Array.from(container.children || []).filter(isVisible);
+      const validChildren = rawChildren.filter(c => {
+        const tag = (c.tagName || "").toLowerCase();
+        return ["div", "li", "button", "label", "a", "span"].includes(tag);
+      });
 
-      const firstTag = (children[0].tagName || "").toLowerCase();
-      if (!["div", "li", "button", "label", "span"].includes(firstTag)) continue;
-      const allSameTag = children.every(c => (c.tagName || "").toLowerCase() === firstTag);
+      if (validChildren.length < 2 || validChildren.length > 6) continue;
+
+      // Disqualify immediately if ANY candidate child is or contains an action button or footer
+      const hasActionChild = validChildren.some(c => containsActionButtonOrFooter(c));
+      if (hasActionChild) continue;
+
+      // All children should share the same tag name
+      const firstTag = (validChildren[0].tagName || "").toLowerCase();
+      const allSameTag = validChildren.every(c => (c.tagName || "").toLowerCase() === firstTag);
       if (!allSameTag) continue;
 
-      const hasActionBtn = children.some(c => {
-        const txt = cleanText(c.textContent || "");
-        return /^(?:show\s*answer|submit|skip|next\s*question|next|end\s*practice|practice\s*instructions)$/i.test(txt);
-      });
-      if (hasActionBtn) continue;
-
-      const texts = children.map(c => getCleanVisibleText(c));
+      // Check each child has clean visible text between 1 and 300 characters
+      const texts = validChildren.map(c => getCleanVisibleText(c));
       const validTexts = texts.every(t => t.length >= 1 && t.length <= 300 && !isHeaderOrNavText(t));
       if (!validTexts) continue;
 
       const uniqueTexts = new Set(texts);
       if (uniqueTexts.size < 2) continue;
 
-      return children;
+      // Disqualify immediately if there is NO question text inside scope preceding this container
+      const containerIdx = allDescendants.indexOf(container);
+      if (containerIdx > 0) {
+        let hasPrecedingText = false;
+        for (let j = 0; j < containerIdx; j++) {
+          const prev = allDescendants[j];
+          if (container.contains && container.contains(prev)) continue;
+          if (containsActionButtonOrFooter(prev)) continue;
+          const prevTxt = getCleanVisibleText(prev);
+          if (prevTxt.length >= 8 && !isHeaderOrNavText(prevTxt)) {
+            hasPrecedingText = true;
+            break;
+          }
+        }
+        if (!hasPrecedingText) continue;
+      } else {
+        continue;
+      }
+
+      return validChildren;
     }
 
     return [];
@@ -584,7 +639,7 @@
     let optionElements = [];
     if (custom.optionsSelector) {
       const found = Array.from(doc.querySelectorAll(custom.optionsSelector)).filter(isVisible);
-      if (found.length > 0) {
+      if (found.length >= 2) {
         optionElements = found;
         matchedSelectors.options = custom.optionsSelector;
       }
@@ -657,13 +712,16 @@
     let question = "";
     if (custom.questionSelector) {
       const el = doc.querySelector(custom.questionSelector);
-      if (el && getCleanVisibleText(el)) {
-        question = getCleanVisibleText(el);
-        matchedSelectors.question = custom.questionSelector;
+      if (el && isVisible(el) && !isExplanationOrFeedback(el)) {
+        const txt = getCleanVisibleText(el);
+        if (txt.length >= 8 && !isHeaderOrNavText(txt)) {
+          question = txt;
+          matchedSelectors.question = custom.questionSelector;
+        }
       }
     }
 
-    // React card search: search question containers for multi-block stems (prompts + <pre><code>)
+    // Outermost content blocks discovery inside quiz card strictly preceding optionElements[0]
     if (!question) {
       const cardContainers = (quizCard ? [quizCard] : Array.from(doc.querySelectorAll(
         "[class*='question-card'], [class*='questionCard'], [class*='questionContainer'], [class*='question-container'], [class*='quiz-card'], [class*='quizCard'], [class*='quiz-container'], [class*='quizContainer'], [class*='practice-card'], [class*='problem-card'], [class*='mcq-card'], [class*='card'], .card, main, [role='main'], form"
@@ -675,34 +733,45 @@
         const allDescendants = Array.from(card.querySelectorAll("*"));
         const firstOpt = (optionElements && optionElements.length > 0) ? optionElements[0] : null;
         const firstOptIndex = firstOpt ? allDescendants.indexOf(firstOpt) : -1;
-        const hrEl = card.querySelector("hr");
-        const hrIndex = hrEl ? allDescendants.indexOf(hrEl) : -1;
 
-        const stemCandidates = Array.from(card.querySelectorAll("p, pre, code, table, h2, h3, h4, div, span, [class*='question']")).filter(isVisible);
+        // Elements inside card strictly preceding firstOpt in pre-order traversal
+        const precedingElements = (firstOptIndex !== -1)
+          ? allDescendants.slice(0, firstOptIndex).filter(el => !el.contains(firstOpt))
+          : allDescendants;
+
+        // Filter to the outermost content blocks among preceding elements
+        const outermostBlocks = [];
+        for (const el of precedingElements) {
+          if (!isVisible(el)) continue;
+          if (containsActionButtonOrFooter(el)) continue;
+          if (isExplanationOrFeedback(el)) continue;
+
+          // If an ancestor is already selected in outermostBlocks, skip this descendant to avoid duplication & missing inline tokens
+          const hasSelectedAncestor = outermostBlocks.some(parent => parent.contains(el));
+          if (hasSelectedAncestor) continue;
+
+          const tag = (el.tagName || "").toLowerCase();
+          if (tag === "button" || tag === "input" || tag === "hr" || tag === "br" || tag === "style" || tag === "script") continue;
+          if (el.querySelector && el.querySelector("input[type='radio'], [role='radio'], [class*='option'], button")) continue;
+
+          // If this is a container holding multiple block-level children, skip it so its individual blocks are selected
+          if (tag !== "pre" && tag !== "code" && el.querySelector && el.querySelector("p, h1, h2, h3, h4, pre, code, table")) {
+            continue;
+          }
+
+          const isCode = tag === "pre" || tag === "code";
+          const txt = getCleanVisibleText(el, isCode);
+          if (txt.length >= 8 && !isHeaderOrNavText(txt)) {
+            outermostBlocks.push(el);
+          }
+        }
+
         const stemParts = [];
-
-        for (const el of stemCandidates) {
-          const elIdx = allDescendants.indexOf(el);
-          if (firstOptIndex !== -1 && elIdx >= firstOptIndex) continue;
-          if (hrIndex !== -1 && elIdx >= hrIndex) continue;
-          if (firstOpt && el.contains && el.contains(firstOpt)) continue;
-
-          // Avoid elements inside option lists, radio groups, buttons, top-bars, or explanation drawers
-          if (el.closest && (el.closest("[class*='option'], [class*='choice'], [class*='radio'], label, button, .react-top-bar, footer") || isExplanationOrFeedback(el))) {
-            continue;
-          }
-          if (el.tagName && el.tagName.toLowerCase() === "button") continue;
-          if (el.querySelector && el.querySelector("input[type='radio'], [role='radio'], [class*='option'], button")) {
-            continue;
-          }
-
-          const tag = el.tagName.toLowerCase();
-          if (tag === "code" && el.closest && el.closest("pre")) {
-            // Skip inner <code> if parent <pre> exists to avoid duplicate extraction
-            continue;
-          }
-          if (tag === "pre" || tag === "code") {
-            const rawCode = (el.textContent || el.innerText || "");
+        for (const block of outermostBlocks) {
+          const tag = (block.tagName || "").toLowerCase();
+          const isCode = tag === "pre" || tag === "code";
+          if (isCode) {
+            const rawCode = (block.textContent || block.innerText || "");
             const cleanCode = rawCode
               .replace(/[\u200B-\u200D\uFEFF]/g, "")
               .replace(/\r\n/g, "\n")
@@ -715,10 +784,7 @@
               stemParts.push(formattedCode);
             }
           } else {
-            const hasBlockChildren = el.querySelector("p, h1, h2, h3, h4, pre, code, table");
-            if (hasBlockChildren) continue;
-
-            const txt = getCleanVisibleText(el);
+            const txt = getCleanVisibleText(block, false);
             if (txt.length >= 8 && !isHeaderOrNavText(txt) && !stemParts.some(p => p.includes(txt))) {
               stemParts.push(txt);
             }
@@ -975,6 +1041,7 @@
     isRadioOrOptionVisible,
     getCleanVisibleText,
     isHeaderOrNavText,
+    containsActionButtonOrFooter,
     isExplanationOrFeedback,
     findQuizCard,
     findClasslessOptionElements,
